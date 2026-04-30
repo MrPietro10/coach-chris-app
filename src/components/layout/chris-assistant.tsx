@@ -80,7 +80,6 @@ function sameResultsJobContext(a: ResultsJobContext | null, b: ResultsJobContext
   return a.gaps.every((gap, index) => gap === b.gaps[index]);
 }
 
-type PromptConfidenceLevel = "Low" | "Medium" | "High";
 const OPTIMIZE_PROMPTS: PromptDef[] = [
   { id: "o1", label: "Explain this change" },
   { id: "o2", label: "Is this bullet too exaggerated?" },
