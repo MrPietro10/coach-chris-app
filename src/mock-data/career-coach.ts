@@ -147,8 +147,6 @@ export const rewritePreview: ResumeRewrite[] = ENABLE_MOCK_DATA
   ? rewritePreviewSeed
   : [];
 
-const originalDocumentSeed: OptimizeDocument = emptyOptimizeDocument;
-
 const emptyOptimizeDocument: OptimizeDocument = {
   name: "",
   location: "",
@@ -163,6 +161,8 @@ const emptyOptimizeDocument: OptimizeDocument = {
   tools: [],
   other: [],
 };
+
+const originalDocumentSeed: OptimizeDocument = emptyOptimizeDocument;
 
 export const originalDocument: OptimizeDocument = ENABLE_MOCK_DATA
   ? originalDocumentSeed
