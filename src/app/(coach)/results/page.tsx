@@ -1,6 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { buildAnalysisInputFingerprint } from "@/lib/analysis-input-fingerprint";
+import {
+  buildAnalysisResumeContext,
+  hasAnalysisResumeContext,
+} from "@/lib/analysis-resume-context";
+import { getReadyAnalysisForJob } from "@/lib/analysis-records";
 import { Document, Packer, Paragraph, TextRun } from "docx";
 import { PageHeader } from "@/components/ui/page-header";
 import { getProviderConfig } from "@/lib/ai";
@@ -10,6 +16,8 @@ import {
   getAnalyzedJobsState,
   getStoredResumeInput,
   getSelectedJobId,
+  clearPendingAnalysisJobId,
+  getPendingAnalysisJobId,
   setComputedJobAnalysis,
   setJobAnalyzed,
   setSelectedJobId as persistSelectedJobId,
@@ -30,13 +38,17 @@ import { AskChrisLink } from "@/components/ui/ask-chris-link";
 import { InlineOptimizeForJob, type GapDrivenInput } from "@/components/optimize/inline-optimize";
 import { logEvent } from "@/lib/alpha-usage-logger";
 import {
+  confidenceToAxisPercent,
+  explainConfidenceLevel,
   fitColor,
+  fitScoreToAxisPercent,
   fitVerdict,
   getFitBand,
   getFitMeta,
+  getStoredOrInferredConfidence,
   inferConfidenceLevel,
 } from "@/utils/fit";
-import type { ConfidenceLevel, FitCategory, JobAnalysis } from "@/types/coach";
+import type { ConfidenceLevel, FitCategory, JobAnalysis, JobPosting } from "@/types/coach";
 import type { OptimizeDocument } from "@/types/coach";
 import type { AnalyzeSelectedJobOutput } from "@/lib/ai";
 
@@ -45,16 +57,14 @@ function getMatrixPosition(
   confidence: ConfidenceLevel,
   stackIndex: number,
 ): { x: number; y: number } {
-  const normalizedX = Math.max(0, Math.min(100, score));
-  const baseX = 8 + normalizedX * 0.84;
-  const baseY = confidence === "High" ? 20 : confidence === "Medium" ? 50 : 80;
-
+  const baseX = confidenceToAxisPercent(confidence);
+  const baseY = fitScoreToAxisPercent(score);
   const offsets = [
     { dx: 0, dy: 0 },
-    { dx: -5, dy: 4 },
-    { dx: 5, dy: -4 },
-    { dx: -8, dy: -3 },
-    { dx: 8, dy: 3 },
+    { dx: -4, dy: 3 },
+    { dx: 4, dy: -3 },
+    { dx: -6, dy: -2 },
+    { dx: 6, dy: 2 },
   ];
   const off = offsets[stackIndex % offsets.length];
 
@@ -62,6 +72,13 @@ function getMatrixPosition(
     x: Math.max(6, Math.min(94, baseX + off.dx)),
     y: Math.max(6, Math.min(94, baseY + off.dy)),
   };
+}
+
+function getFitBandChipClass(score: number): string {
+  const band = getFitBand(score);
+  if (band === "High") return "border-emerald-300 bg-emerald-50 text-emerald-800";
+  if (band === "Medium") return "border-sky-300 bg-sky-50 text-sky-800";
+  return "border-rose-300 bg-rose-50 text-rose-800";
 }
 
 function FitMatrix({
@@ -75,7 +92,7 @@ function FitMatrix({
 }) {
   const laneCounters: Record<string, number> = {};
   const positioned = items.map(({ analysis, company, confidence }) => {
-    const laneKey = `${confidence}-${Math.floor(analysis.score / 10)}`;
+    const laneKey = `${confidence}-${getFitBand(analysis.score)}`;
     const idx = laneCounters[laneKey] ?? 0;
     laneCounters[laneKey] = idx + 1;
     const pos = getMatrixPosition(analysis.score, confidence, idx);
@@ -88,56 +105,46 @@ function FitMatrix({
         Application summary
       </h3>
       <p className="mt-1 text-xs text-zinc-400">
-        Where each role lands based on fit score and confidence
+        Fit strength rises on the chart; confidence moves left to right.
       </p>
 
       <div className="mt-4 flex items-center justify-center">
         <div className="relative w-full max-w-md">
-          {/* Y-axis label */}
           <span className="absolute -left-6 top-1/2 -translate-y-1/2 -rotate-90 whitespace-nowrap text-[10px] font-medium tracking-wide text-zinc-400">
-            Confidence
+            Fit strength
           </span>
 
           {/* Grid container */}
           <div className="relative ml-2 aspect-square w-full overflow-hidden rounded-lg border border-zinc-200">
-            {/* Confidence bands */}
             <div className="absolute inset-0 grid grid-rows-3">
               <div className="relative bg-emerald-50/35">
-                <span className="absolute left-2 top-1.5 text-[10px] font-medium text-zinc-400">
-                  High confidence
+                <span className="absolute left-2 top-1.5 text-[10px] font-medium text-zinc-500">
+                  High fit
                 </span>
               </div>
-              <div className="relative bg-zinc-50/70">
-                <span className="absolute left-2 top-1.5 text-[10px] font-medium text-zinc-400">
-                  Medium confidence
+              <div className="relative bg-sky-50/35">
+                <span className="absolute left-2 top-1.5 text-[10px] font-medium text-zinc-500">
+                  Medium fit
                 </span>
               </div>
-              <div className="relative bg-amber-50/35">
-                <span className="absolute left-2 top-1.5 text-[10px] font-medium text-zinc-400">
-                  Low confidence
+              <div className="relative bg-rose-50/35">
+                <span className="absolute left-2 top-1.5 text-[10px] font-medium text-zinc-500">
+                  Low fit
                 </span>
               </div>
             </div>
 
-            {/* Guide lines */}
             <div className="absolute left-0 top-1/3 h-px w-full border-t border-dashed border-zinc-300" />
             <div className="absolute left-0 top-2/3 h-px w-full border-t border-dashed border-zinc-300" />
-            <div className="absolute left-1/2 top-0 h-full w-px border-l border-dashed border-zinc-300" />
+            <div className="absolute left-1/3 top-0 h-full w-px border-l border-dashed border-zinc-300" />
+            <div className="absolute left-2/3 top-0 h-full w-px border-l border-dashed border-zinc-300" />
 
-            {/* Axis arrows */}
-            <span className="absolute bottom-1 right-1 text-[9px] text-zinc-300">
-              High →
-            </span>
-            <span className="absolute bottom-1 left-1 text-[9px] text-zinc-300">
-              Low
-            </span>
-            <span className="absolute left-1 top-1 text-[9px] text-zinc-300">
-              High ↑
-            </span>
+            <span className="absolute bottom-1 left-1 text-[9px] text-zinc-400">Low confidence</span>
+            <span className="absolute bottom-1 right-1 text-[9px] text-zinc-400">High confidence</span>
 
-            {/* Application chips */}
             {positioned.map(({ analysis, company, confidence, pos }) => {
               const isSelected = analysis.jobId === selectedJobId;
+              const fitBand = getFitBand(analysis.score);
               return (
                 <button
                   key={analysis.jobId}
@@ -146,38 +153,40 @@ function FitMatrix({
                   className={`absolute z-10 -translate-x-1/2 -translate-y-1/2 rounded-full border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap transition-all ${
                     isSelected
                       ? "border-zinc-900 bg-zinc-900 text-white shadow-md scale-110"
-                      : "border-zinc-300 bg-white text-zinc-600 hover:border-zinc-400 hover:shadow-sm"
+                      : `${getFitBandChipClass(analysis.score)} hover:shadow-sm`
                   }`}
                   style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
+                  title={`${fitBand} fit, ${confidence} confidence`}
                 >
                   {company}
-                  <span className="ml-1 opacity-60">{analysis.score}</span>
-                  <span className="ml-1 opacity-50">{confidence[0]}</span>
+                  <span className="ml-1 opacity-70">{analysis.score}</span>
                 </button>
               );
             })}
           </div>
 
-          {/* X-axis label */}
           <p className="mt-1.5 text-center text-[10px] font-medium tracking-wide text-zinc-400">
-            Fit Score
+            Confidence
           </p>
         </div>
       </div>
 
-      {/* Legend */}
       <div className="mt-4 flex flex-wrap justify-center gap-x-4 gap-y-1 border-t border-zinc-100 pt-3">
         <span className="flex items-center gap-1.5 text-[11px] text-zinc-500">
           <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
-          High confidence
+          High fit
+        </span>
+        <span className="flex items-center gap-1.5 text-[11px] text-zinc-500">
+          <span className="inline-block h-2 w-2 rounded-full bg-sky-400" />
+          Medium fit
+        </span>
+        <span className="flex items-center gap-1.5 text-[11px] text-zinc-500">
+          <span className="inline-block h-2 w-2 rounded-full bg-rose-400" />
+          Low fit
         </span>
         <span className="flex items-center gap-1.5 text-[11px] text-zinc-500">
           <span className="inline-block h-2 w-2 rounded-full bg-zinc-400" />
-          Medium confidence
-        </span>
-        <span className="flex items-center gap-1.5 text-[11px] text-zinc-500">
-          <span className="inline-block h-2 w-2 rounded-full bg-amber-400" />
-          Low confidence
+          Left = lower confidence
         </span>
       </div>
     </section>
@@ -193,7 +202,7 @@ function ScoreRing({ score, fit }: { score: number; fit: FitCategory }) {
     "Strong Fit": "#059669",
     "Backup Fit": "#0284c7",
     "Aspirational Fit": "#d97706",
-    "No Fit": "#e11d48",
+    "Low Fit": "#e11d48",
   };
 
   return (
@@ -244,7 +253,7 @@ function inferComputedFitLabel(payload: AnalyzeSelectedJobOutput): FitCategory |
   const fitBand = getFitBand(payload.fitScore);
   if (fitBand === "High") return "Strong Fit";
   if (fitBand === "Medium") return "Backup Fit";
-  return "No Fit";
+  return "Low Fit";
 }
 
 function toComputedJobAnalysis(
@@ -252,9 +261,13 @@ function toComputedJobAnalysis(
   payload: AnalyzeSelectedJobOutput,
 ): ComputedJobAnalysis {
   const inferredFit = inferComputedFitLabel(payload);
-  const hasInsufficientEvidence =
-    payload.missingEvidence.some((line) => line.toLowerCase().includes("insufficient"));
-  const fit = inferredFit ?? "No Fit";
+  const combinedSignals = [...payload.topGaps, ...payload.missingEvidence, payload.overallFitSummary]
+    .join(" ")
+    .toLowerCase();
+  const isUnavailableResponse =
+    payload.fitScore <= 1 && combinedSignals.includes("gemini_api_key");
+  const hasInsufficientEvidence = isUnavailableResponse;
+  const fit = inferredFit ?? "Low Fit";
   const score = payload.fitScore;
   return {
     jobId,
@@ -370,6 +383,35 @@ function sanitizeResumeLineForOutput(text: string): string {
     .trim();
 }
 
+function resolveInitialSelectedJobId(
+  availableJobs: JobPosting[],
+  analyzedJobsState: AnalyzedJobsState,
+  computedAnalysesState: ComputedJobAnalysesState,
+): string {
+  const selectedFromSession = getSelectedJobId();
+  if (selectedFromSession && availableJobs.some((jobItem) => jobItem.id === selectedFromSession)) {
+    return selectedFromSession;
+  }
+
+  for (const jobItem of availableJobs) {
+    const computed = computedAnalysesState[jobItem.id];
+    if (computed?.analysisState === "ready" || analyzedJobsState[jobItem.id]) {
+      return jobItem.id;
+    }
+  }
+
+  return availableJobs[0]?.id ?? analyses[0]?.jobId ?? "";
+}
+
+function buildFitSummaryHeadline(options: {
+  score: number;
+  fitBand: ReturnType<typeof getFitBand>;
+  confidenceLevel: ConfidenceLevel;
+  verdict: string;
+}): string {
+  return `Score ${options.score}: ${options.fitBand.toLowerCase()} fit with ${options.confidenceLevel.toLowerCase()} confidence. ${options.verdict}.`;
+}
+
 function getProviderUnavailableMessage(payload: AnalyzeSelectedJobOutput): string | null {
   const combined = [
     payload.overallFitSummary,
@@ -402,49 +444,52 @@ export default function ResultsPage() {
   const [showInlineOptimize, setShowInlineOptimize] = useState(false);
   const optimizeRef = useRef<HTMLElement | null>(null);
   const [structuredGapsByJob, setStructuredGapsByJob] = useState<Record<string, StructuredGap[]>>({});
+  const autoAnalysisStartedForJobRef = useRef<string | null>(null);
   const hasResumeInput =
     resumeSummaryInput.trim().length > 0 ||
     resumeSkillsInput.trim().length > 0 ||
     resumeHighlightsInput.trim().length > 0;
 
   const computedAnalysis = computedAnalysesState[selectedJobId];
-  const analysis =
-    (computedAnalysis?.analysisState === "ready" ? computedAnalysis : undefined) ??
-    analyses.find((a) => a.jobId === selectedJobId);
+  const analysis = getReadyAnalysisForJob(selectedJobId, computedAnalysesState, analyses);
   const job = availableJobs.find((j) => j.id === selectedJobId);
-  const hasExistingFitState = Boolean(analysis || computedAnalysis);
+  const hasReadyFitAnalysis = Boolean(analysis);
   const needsLegacyReanalysis = Boolean(
-    job && analyzedJobsState[selectedJobId] && !analysis && !computedAnalysis,
+    job && analyzedJobsState[selectedJobId] && !hasReadyFitAnalysis,
   );
   const hasJobSelected = Boolean(job);
-  const hasMockAnalysis = Boolean(analysis);
   const optimizeData = job ? optimizeByJob[job.id] : undefined;
   const meta = analysis ? getFitMeta(analysis.fit) : null;
   const verdict = analysis ? fitVerdict(analysis.fit) : null;
   const fitBand = analysis ? getFitBand(analysis.score) : null;
-  const topPriorityNextStep = analysis?.gaps[0] ?? "Re-run analysis after updating one role-relevant proof point.";
+  const topPriorityNextStep = analysis?.gaps[0] ?? "Run analysis after updating one role-relevant proof point.";
   const resumeCompleteness = calculateResumeCompleteness({
     summary: resumeSummaryInput,
     skills: resumeSkillsInput,
     highlights: resumeHighlightsInput,
   });
-  const confidenceLevel: ConfidenceLevel = inferConfidenceLevel({
+  const confidenceLevel: ConfidenceLevel = getStoredOrInferredConfidence({
+    storedConfidence: computedAnalysis?.confidenceLevel,
     resumeCompleteness,
     missingEvidenceCount: computedAnalysis?.missingEvidence.length ?? 0,
     keyRequirementEvidenceCount: analysis?.strengths.length ?? 0,
     evidenceItems: analysis?.strengths ?? [],
   });
+  const confidenceExplanation = analysis
+    ? explainConfidenceLevel({
+        confidence: confidenceLevel,
+        missingEvidenceCount: computedAnalysis?.missingEvidence.length ?? 0,
+        keyRequirementEvidenceCount: analysis.strengths.length,
+      })
+    : null;
 
-  const matrixAnalysisItems = [
-    ...analyses,
-    ...Object.values(computedAnalysesState).filter(
-      (item) =>
-        item.analysisState === "ready" && !analyses.some((analysisItem) => analysisItem.jobId === item.jobId),
-    ),
-  ];
+  const matrixAnalysisItems = availableJobs
+    .map((jobItem) => getReadyAnalysisForJob(jobItem.id, computedAnalysesState, analyses))
+    .filter((item): item is JobAnalysis => Boolean(item));
   const getConfidenceForMatrixItem = (analysisItem: JobAnalysis): ConfidenceLevel => {
     const computed = computedAnalysesState[analysisItem.jobId];
-    return inferConfidenceLevel({
+    return getStoredOrInferredConfidence({
+      storedConfidence: computed?.confidenceLevel,
       resumeCompleteness,
       missingEvidenceCount: computed?.missingEvidence.length ?? 0,
       keyRequirementEvidenceCount: analysisItem.strengths.length,
@@ -488,9 +533,26 @@ export default function ResultsPage() {
 
   useEffect(() => {
     const refreshJobs = () => {
-      setAvailableJobs(getAllStoredJobs(jobs));
-      setAnalyzedJobsState(getAnalyzedJobsState());
-      setComputedAnalysesState(getComputedJobAnalysesState());
+      const nextJobs = getAllStoredJobs(jobs);
+      const nextAnalyzedJobsState = getAnalyzedJobsState();
+      const nextComputedAnalysesState = getComputedJobAnalysesState();
+      setAvailableJobs(nextJobs);
+      setAnalyzedJobsState(nextAnalyzedJobsState);
+      setComputedAnalysesState(nextComputedAnalysesState);
+      setSelectedJobId((currentSelectedJobId) => {
+        if (nextJobs.some((jobItem) => jobItem.id === currentSelectedJobId)) {
+          return currentSelectedJobId;
+        }
+        const nextSelectedJobId = resolveInitialSelectedJobId(
+          nextJobs,
+          nextAnalyzedJobsState,
+          nextComputedAnalysesState,
+        );
+        if (nextSelectedJobId) {
+          persistSelectedJobId(nextSelectedJobId);
+        }
+        return nextSelectedJobId;
+      });
     };
     const storedResume = getStoredResumeInput();
     if (storedResume.summary || storedResume.skills || storedResume.highlights) {
@@ -498,23 +560,31 @@ export default function ResultsPage() {
       setResumeSkillsInput(storedResume.skills);
       setResumeHighlightsInput(storedResume.highlights);
     }
-    refreshJobs();
+    const nextJobs = getAllStoredJobs(jobs);
+    const nextAnalyzedJobsState = getAnalyzedJobsState();
+    const nextComputedAnalysesState = getComputedJobAnalysesState();
+    setAvailableJobs(nextJobs);
+    setAnalyzedJobsState(nextAnalyzedJobsState);
+    setComputedAnalysesState(nextComputedAnalysesState);
+    const initialSelectedJobId = resolveInitialSelectedJobId(
+      nextJobs,
+      nextAnalyzedJobsState,
+      nextComputedAnalysesState,
+    );
+    setSelectedJobId(initialSelectedJobId);
+    if (initialSelectedJobId) {
+      persistSelectedJobId(initialSelectedJobId);
+    }
     setMounted(true);
     window.addEventListener("storage", refreshJobs);
     window.addEventListener("focus", refreshJobs);
+    window.addEventListener("career-coach:analysis-updated", refreshJobs);
     return () => {
       window.removeEventListener("storage", refreshJobs);
       window.removeEventListener("focus", refreshJobs);
+      window.removeEventListener("career-coach:analysis-updated", refreshJobs);
     };
   }, []);
-
-  useEffect(() => {
-    const selectedFromSession = getSelectedJobId();
-    if (!selectedFromSession) return;
-    if (availableJobs.some((jobItem) => jobItem.id === selectedFromSession)) {
-      setSelectedJobId(selectedFromSession);
-    }
-  }, [availableJobs]);
 
   useEffect(() => {
     setSingleJobUnavailableMessage(null);
@@ -567,10 +637,51 @@ export default function ResultsPage() {
     }));
   }, [selectedJobId, structuredGapsByJob]);
 
-  async function generateSingleJobAnalysis(eventName: "run_analysis" | "rerun_analysis") {
+  const generateSingleJobAnalysis = useCallback(async (eventName: "run_analysis" | "rerun_analysis") => {
     if (!job) {
       setSingleJobContextNotice("Select a job to generate single-job analysis.");
       setSingleJobError(null);
+      return;
+    }
+    if (isGeneratingSingleJobAnalysis) return;
+
+    const resumeContext = buildAnalysisResumeContext({
+      summary: resumeSummaryInput,
+      skills: resumeSkillsInput,
+      highlights: resumeHighlightsInput,
+    });
+    if (!hasAnalysisResumeContext(resumeContext)) {
+      setSingleJobError("Paste your resume on the Resume page or in the resume fields below before analyzing.");
+      return;
+    }
+
+    const inputFingerprint = buildAnalysisInputFingerprint({
+      jobId: job.id,
+      jobDescription: job.description,
+      resumeContext,
+    });
+    const storedComputed = computedAnalysesState[job.id];
+    if (
+      storedComputed?.analysisState === "ready" &&
+      storedComputed.inputFingerprint === inputFingerprint
+    ) {
+      setJobAnalyzed(job.id, true);
+      setAnalyzedJobsState((prev) => ({ ...prev, [job.id]: true }));
+      const currentStatus = getStoredJobStatuses()[job.id];
+      if (!currentStatus || currentStatus === "Analyzed") {
+        setStoredJobStatus(job.id, "Analyzed");
+      }
+      setComputedAnalysesState((prev) => ({ ...prev, [job.id]: storedComputed }));
+      setSelectedJob(job.id);
+      clearPendingAnalysisJobId();
+      setSingleJobError(null);
+      setSingleJobUnavailableMessage(null);
+      if (eventName === "rerun_analysis") {
+        setSingleJobContextNotice("Inputs unchanged — showing your saved analysis.");
+      } else {
+        setSingleJobContextNotice(null);
+      }
+      window.dispatchEvent(new Event("career-coach:analysis-updated"));
       return;
     }
 
@@ -580,13 +691,16 @@ export default function ResultsPage() {
     setSingleJobError(null);
     setSingleJobContextNotice(null);
     setSingleJobUnavailableMessage(null);
-    const previousConfidence: ConfidenceLevel | null = hasExistingFitState ? confidenceLevel : null;
-    console.log("ANALYSIS INPUT:", {
-      jobDescription: job.description,
-      resumeSummaryInput,
-      resumeSkillsInput,
-      resumeHighlightsInput,
-    });
+    clearPendingAnalysisJobId();
+    const previousConfidence: ConfidenceLevel | null = hasReadyFitAnalysis
+      ? getStoredOrInferredConfidence({
+          storedConfidence: storedComputed?.confidenceLevel,
+          resumeCompleteness,
+          missingEvidenceCount: storedComputed?.missingEvidence.length ?? 0,
+          keyRequirementEvidenceCount: analysis?.strengths.length ?? 0,
+          evidenceItems: analysis?.strengths ?? [],
+        })
+      : null;
     try {
       const response = await fetch("/api/coach/single-job-analysis", {
         method: "POST",
@@ -600,17 +714,7 @@ export default function ResultsPage() {
             description: job.description,
             requiredSkills: job.requiredSkills,
           },
-          resumeContext: {
-            summary: resumeSummaryInput.trim(),
-            skills: resumeSkillsInput
-              .split(",")
-              .map((item) => item.trim())
-              .filter((item) => item.length > 0),
-            experienceHighlights: resumeHighlightsInput
-              .split("\n")
-              .map((item) => item.trim())
-              .filter((item) => item.length > 0),
-          },
+          resumeContext,
           fitContext: analysis
             ? {
                 fit: analysis.fit,
@@ -633,7 +737,17 @@ export default function ResultsPage() {
         }),
       });
       if (!response.ok) {
-        throw new Error("ANALYSIS_REQUEST_FAILED");
+        let errorMessage = "Could not generate analysis right now. Please try again in a moment.";
+        try {
+          const errorPayload = (await response.json()) as { error?: string };
+          if (typeof errorPayload.error === "string" && errorPayload.error.trim().length > 0) {
+            errorMessage = errorPayload.error;
+          }
+        } catch {
+          // Keep the default error message when the response body is not JSON.
+        }
+        setSingleJobError(errorMessage);
+        return;
       }
       const payload = (await response.json()) as AnalyzeSelectedJobOutput;
       const unavailableMessage = getProviderUnavailableMessage(payload);
@@ -642,17 +756,23 @@ export default function ResultsPage() {
         return;
       }
       setJobAnalyzed(job.id, true);
+      setAnalyzedJobsState((prev) => ({ ...prev, [job.id]: true }));
       const currentStatus = getStoredJobStatuses()[job.id];
       if (!currentStatus || currentStatus === "Analyzed") {
         setStoredJobStatus(job.id, "Analyzed");
       }
-      const computed = toComputedJobAnalysis(job.id, payload);
+      const computedBase = toComputedJobAnalysis(job.id, payload);
       const nextConfidence = inferConfidenceLevel({
         resumeCompleteness,
-        missingEvidenceCount: computed.missingEvidence.length,
-        keyRequirementEvidenceCount: computed.strengths.length,
-        evidenceItems: computed.strengths,
+        missingEvidenceCount: computedBase.missingEvidence.length,
+        keyRequirementEvidenceCount: computedBase.strengths.length,
+        evidenceItems: computedBase.strengths,
       });
+      const computed: ComputedJobAnalysis = {
+        ...computedBase,
+        inputFingerprint,
+        confidenceLevel: nextConfidence,
+      };
       const confidenceChangeMessage =
         previousConfidence === null
           ? null
@@ -663,6 +783,8 @@ export default function ResultsPage() {
             });
       setComputedJobAnalysis(computed);
       setComputedAnalysesState((prev) => ({ ...prev, [job.id]: computed }));
+      setSelectedJob(job.id);
+      window.dispatchEvent(new Event("career-coach:analysis-updated"));
       if (confidenceChangeMessage) {
         setSingleJobContextNotice(confidenceChangeMessage);
       }
@@ -674,7 +796,53 @@ export default function ResultsPage() {
     } finally {
       setIsGeneratingSingleJobAnalysis(false);
     }
-  }
+  }, [
+    analysis,
+    computedAnalysesState,
+    hasReadyFitAnalysis,
+    isGeneratingSingleJobAnalysis,
+    job,
+    optimizeData,
+    resumeCompleteness,
+    resumeHighlightsInput,
+    resumeSkillsInput,
+    resumeSummaryInput,
+  ]);
+
+  const handleAnalyzeAction = useCallback(
+    (forceRerun = false) => {
+      void generateSingleJobAnalysis(forceRerun ? "rerun_analysis" : "run_analysis");
+    },
+    [generateSingleJobAnalysis],
+  );
+
+  useEffect(() => {
+    if (!mounted || !job || isGeneratingSingleJobAnalysis || hasReadyFitAnalysis) return;
+
+    const pendingJobId = getPendingAnalysisJobId();
+    if (!pendingJobId || pendingJobId !== selectedJobId) return;
+
+    const resumeContext = buildAnalysisResumeContext({
+      summary: resumeSummaryInput,
+      skills: resumeSkillsInput,
+      highlights: resumeHighlightsInput,
+    });
+    if (!hasAnalysisResumeContext(resumeContext)) return;
+    if (autoAnalysisStartedForJobRef.current === selectedJobId) return;
+
+    autoAnalysisStartedForJobRef.current = selectedJobId;
+    void generateSingleJobAnalysis("run_analysis");
+  }, [
+    generateSingleJobAnalysis,
+    hasReadyFitAnalysis,
+    isGeneratingSingleJobAnalysis,
+    job,
+    mounted,
+    resumeHighlightsInput,
+    resumeSkillsInput,
+    resumeSummaryInput,
+    selectedJobId,
+  ]);
 
   function buildResumeExportText(): string {
     const skills = resumeSkillsInput
@@ -839,7 +1007,7 @@ export default function ResultsPage() {
             </div>
           </section>
         )}
-        {job && !hasMockAnalysis && (
+        {job && !hasReadyFitAnalysis && (
           <p className="px-1 text-xs text-zinc-500">
             {computedAnalysis?.analysisState === "insufficient_evidence"
               ? "This job was analyzed but evidence is insufficient for matrix placement yet."
@@ -874,12 +1042,24 @@ export default function ResultsPage() {
                     </span>
                     <span className="text-sm text-zinc-600">{verdict}</span>
                   </div>
-                  <p className="mt-2 text-xs text-zinc-500">
-                    Right now you look like a {fitBand?.toLowerCase()} fit for this role based on the evidence in your current resume input.
-                  </p>
-                  <p className="mt-1 text-xs text-zinc-500">
-                    Confidence is {confidenceLevel.toLowerCase()}, so treat this as guidance and focus on filling evidence gaps before making a final decision.
-                  </p>
+                  {fitBand && verdict && (
+                    <>
+                      <p className="mt-2 text-sm text-zinc-700">
+                        {buildFitSummaryHeadline({
+                          score: analysis.score,
+                          fitBand,
+                          confidenceLevel,
+                          verdict,
+                        })}
+                      </p>
+                      {confidenceExplanation && (
+                        <p className="mt-1 text-sm text-zinc-600">{confidenceExplanation}</p>
+                      )}
+                      <p className="mt-1 text-xs text-zinc-500">
+                        Treat this as guidance and focus on filling evidence gaps before making a final decision.
+                      </p>
+                    </>
+                  )}
                 </div>
               </div>
             </section>
@@ -945,7 +1125,7 @@ export default function ResultsPage() {
             </section>
 
           </>
-        ) : job && !hasMockAnalysis ? (
+        ) : job && !hasReadyFitAnalysis ? (
           <section className="rounded-xl border border-zinc-200/80 bg-white p-5">
             <h3 className="text-sm font-medium text-zinc-900">{job.title}</h3>
             <p className="mt-1 text-sm text-zinc-500">
@@ -954,10 +1134,10 @@ export default function ResultsPage() {
             </p>
             <p className="mt-3 text-sm text-zinc-600">
               {needsLegacyReanalysis
-                ? "I don’t have a current fit read for this one yet. Re-run analysis to get an updated fit score and confidence."
+                ? "This job was saved before analysis was stored. Run analysis to get a fit score, confidence, and gaps."
                 : computedAnalysis?.analysisState === "insufficient_evidence"
                 ? "You might still be a fit, but confidence is low because key evidence is missing."
-                : "I need one fresh analysis pass to give you a clear fit score and confidence read."}
+                : "Run analysis once to get a fit score, confidence, and gaps for this role."}
             </p>
             {computedAnalysis?.missingEvidence && computedAnalysis.missingEvidence.length > 0 && (
               <ul className="mt-3 space-y-1.5 text-sm text-zinc-600">
@@ -971,12 +1151,11 @@ export default function ResultsPage() {
             )}
             <button
               type="button"
-              onClick={() => {
-                void generateSingleJobAnalysis("rerun_analysis");
-              }}
-              className="mt-3 rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50"
+              onClick={() => handleAnalyzeAction(false)}
+              disabled={isGeneratingSingleJobAnalysis}
+              className="mt-3 rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Re-run analysis
+              {isGeneratingSingleJobAnalysis ? "Analyzing..." : "Analyze selected job fit"}
             </button>
           </section>
         ) : (
@@ -995,19 +1174,22 @@ export default function ResultsPage() {
             Keep the loop tight here: edit your resume for this role, re-run analysis, then decide whether to prioritize it. If core gaps still remain after that, skip this role and focus on stronger matches.
           </p>
           <div className="mt-4 flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              onClick={() => {
-                logEvent("improve_resume");
-                setShowInlineOptimize(true);
-                requestAnimationFrame(() => {
-                  optimizeRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-                });
-              }}
-              className="inline-flex min-h-10 items-center justify-center rounded-lg border border-zinc-200 px-4 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-50"
-            >
-              Improve resume input
-            </button>
+            {optimizeData && (
+              <button
+                type="button"
+                onClick={() => {
+                  logEvent("improve_resume");
+                  setShowInlineOptimize(true);
+                  requestAnimationFrame(() => {
+                    optimizeRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                  });
+                }}
+                disabled={isGeneratingSingleJobAnalysis}
+                className="inline-flex min-h-10 items-center justify-center rounded-lg border border-zinc-200 px-4 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Improve resume input
+              </button>
+            )}
             <button className="inline-flex min-h-10 items-center justify-center rounded-lg border border-zinc-200 px-4 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-50">
               Skip this role
             </button>
@@ -1025,19 +1207,13 @@ export default function ResultsPage() {
             )}
             <button
               type="button"
-              onClick={() => {
-                const analysisEventName =
-                  hasExistingFitState || needsLegacyReanalysis
-                    ? "rerun_analysis"
-                    : "run_analysis";
-                void generateSingleJobAnalysis(analysisEventName);
-              }}
+              onClick={() => handleAnalyzeAction(hasReadyFitAnalysis)}
               disabled={isGeneratingSingleJobAnalysis || !hasJobSelected}
               className="inline-flex min-h-10 items-center justify-center rounded-lg border border-zinc-200 px-4 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {isGeneratingSingleJobAnalysis
                 ? "Analyzing selected job fit..."
-                : hasExistingFitState || needsLegacyReanalysis
+                : hasReadyFitAnalysis
                   ? "Re-run analysis"
                   : "Analyze selected job fit"}
             </button>
@@ -1087,24 +1263,17 @@ export default function ResultsPage() {
         </section>
 
         {/* ── Inline Optimize (guided metrics + preview) ── */}
-        <section ref={optimizeRef} className="scroll-mt-24">
-          {showInlineOptimize ? (
-                optimizeData ? (
+        {optimizeData && (
+          <section ref={optimizeRef} className="scroll-mt-24">
+            {showInlineOptimize ? (
               <InlineOptimizeForJob
                 jobData={optimizeData}
                 onDocChange={applyOptimizeDocToResumeContext}
                 gapInputs={inlineGapInputs}
               />
-            ) : (
-              <section className="rounded-xl border border-zinc-200/80 bg-white p-5">
-                <h3 className="text-sm font-medium text-zinc-900">Optimize for this role</h3>
-                <p className="mt-1 text-sm text-zinc-600">
-                  Guided optimization is not available for this role yet.
-                </p>
-              </section>
-            )
-          ) : null}
-        </section>
+            ) : null}
+          </section>
+        )}
 
         {singleJobUnavailableMessage && (
           <section className="rounded-xl border border-amber-200 bg-amber-50 p-5">
@@ -1114,6 +1283,22 @@ export default function ResultsPage() {
         )}
 
       </div>
+
+      {isGeneratingSingleJobAnalysis && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/40 px-5">
+          <section className="w-full max-w-sm rounded-xl border border-zinc-200 bg-white p-5 shadow-lg">
+            <p className="text-sm font-medium text-zinc-900">Analyzing job fit</p>
+            <p className="mt-1 text-sm text-zinc-600">
+              {job
+                ? `Running analysis for ${job.title} at ${job.company}.`
+                : "Running analysis for the selected role."}
+            </p>
+            <p className="mt-2 text-xs text-zinc-500">
+              This can take a moment. Analyze and re-run stay disabled until the request finishes.
+            </p>
+          </section>
+        </div>
+      )}
     </>
   );
 }

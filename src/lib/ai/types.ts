@@ -36,7 +36,7 @@ export type AnalyzeJobFitInput = {
 export type AnalyzeJobFitOutput = {
   provider: AIProviderId;
   score: number;
-  fitLabel: "No Fit" | "Aspirational Fit" | "Backup Fit" | "Strong Fit";
+  fitLabel: "Low Fit" | "Aspirational Fit" | "Backup Fit" | "Strong Fit";
   strengths: string[];
   gaps: string[];
   reasoning: string;

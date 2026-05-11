@@ -1,9 +1,16 @@
-import type { FitCategory, JobAnalysis, JobPosting, ProfileData } from "@/types/coach";
+import type {
+  ConfidenceLevel,
+  FitCategory,
+  JobAnalysis,
+  JobPosting,
+  ProfileData,
+} from "@/types/coach";
 
 const USER_JOBS_STORAGE_KEY = "career-coach.user-jobs";
 const SELECTED_JOB_STORAGE_KEY = "career-coach.selected-job-id";
 const ANALYZED_JOBS_STORAGE_KEY = "career-coach.analyzed-jobs";
 const COMPUTED_ANALYSES_STORAGE_KEY = "career-coach.computed-analyses";
+const PENDING_ANALYSIS_JOB_STORAGE_KEY = "career-coach.pending-analysis-job-id";
 
 export type AnalyzedJobsState = Record<string, boolean>;
 export type ComputedAnalysisState = "ready" | "insufficient_evidence";
@@ -11,6 +18,8 @@ export type ComputedJobAnalysis = JobAnalysis & {
   analysisState: ComputedAnalysisState;
   source: "computed-v1";
   missingEvidence: string[];
+  inputFingerprint?: string;
+  confidenceLevel?: ConfidenceLevel;
 };
 export type ComputedJobAnalysesState = Record<string, ComputedJobAnalysis>;
 
@@ -110,6 +119,22 @@ export function setSelectedJobId(jobId: string): void {
   window.localStorage.setItem(SELECTED_JOB_STORAGE_KEY, jobId);
 }
 
+export function markPendingAnalysisJobId(jobId: string): void {
+  if (!isBrowser()) return;
+  window.localStorage.setItem(PENDING_ANALYSIS_JOB_STORAGE_KEY, jobId);
+}
+
+export function getPendingAnalysisJobId(): string | null {
+  if (!isBrowser()) return null;
+  const value = window.localStorage.getItem(PENDING_ANALYSIS_JOB_STORAGE_KEY);
+  return value && value.trim().length > 0 ? value : null;
+}
+
+export function clearPendingAnalysisJobId(): void {
+  if (!isBrowser()) return;
+  window.localStorage.removeItem(PENDING_ANALYSIS_JOB_STORAGE_KEY);
+}
+
 export function clearSelectedJobId(): void {
   if (!isBrowser()) return;
   window.localStorage.removeItem(SELECTED_JOB_STORAGE_KEY);
@@ -136,11 +161,12 @@ export function setJobAnalyzed(jobId: string, analyzed: boolean): void {
 }
 
 function sanitizeFit(value: unknown): FitCategory | null {
+  if (value === "No Fit") return "Low Fit";
   if (
     value === "Strong Fit" ||
     value === "Backup Fit" ||
     value === "Aspirational Fit" ||
-    value === "No Fit"
+    value === "Low Fit"
   ) {
     return value;
   }
@@ -156,6 +182,12 @@ function sanitizeComputedJobAnalysis(
   if (typeof raw.score !== "number") return null;
   const analysisState =
     raw.analysisState === "insufficient_evidence" ? "insufficient_evidence" : "ready";
+  const confidenceLevel =
+    raw.confidenceLevel === "Low" ||
+    raw.confidenceLevel === "Medium" ||
+    raw.confidenceLevel === "High"
+      ? raw.confidenceLevel
+      : undefined;
   return {
     jobId: raw.jobId,
     fit,
@@ -180,6 +212,11 @@ function sanitizeComputedJobAnalysis(
     missingEvidence: Array.isArray(raw.missingEvidence)
       ? raw.missingEvidence.filter((item): item is string => typeof item === "string")
       : [],
+    inputFingerprint:
+      typeof raw.inputFingerprint === "string" && raw.inputFingerprint.trim().length > 0
+        ? raw.inputFingerprint.trim()
+        : undefined,
+    confidenceLevel,
   };
 }
 
@@ -313,6 +350,18 @@ export function hasStoredResumeInput(): boolean {
     input.skills.trim().length > 0 ||
     input.highlights.trim().length > 0
   );
+}
+
+export function getActiveResumeLabel(): string {
+  if (!hasStoredResumeInput()) return "Not added";
+
+  const input = getStoredResumeInput();
+  const summary = input.summary.trim();
+  if (summary.length > 0) {
+    return summary.length > 28 ? `${summary.slice(0, 28)}...` : summary;
+  }
+
+  return "Resume added";
 }
 
 const PROFILE_STORAGE_KEY = "career-coach.profile";

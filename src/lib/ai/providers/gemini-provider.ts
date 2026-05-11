@@ -25,7 +25,7 @@ function fitLabelFromScore(score: number): AnalyzeJobFitOutput["fitLabel"] {
   if (score >= 80) return "Strong Fit";
   if (score >= 65) return "Backup Fit";
   if (score >= 45) return "Aspirational Fit";
-  return "No Fit";
+  return "Low Fit";
 }
 
 function extractJsonObject(raw: string): string {

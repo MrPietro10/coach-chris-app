@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { PageHeader } from "@/components/ui/page-header";
-import { buildSessionJobId, saveUserJob } from "@/lib/job-session-store";
+import { buildSessionJobId, saveUserJob, setSelectedJobId } from "@/lib/job-session-store";
 import { logEvent } from "@/lib/alpha-usage-logger";
 
 export default function AnalyzePage() {
@@ -13,19 +13,24 @@ export default function AnalyzePage() {
   const [titleInput, setTitleInput] = useState("");
   const [companyInput, setCompanyInput] = useState("");
   const [locationInput, setLocationInput] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
 
   function saveFromInput() {
+    if (isSaving) return;
+
     if (descriptionInput.trim().length === 0) {
       setMessage("Paste a job description before analyzing.");
       return;
     }
 
+    setIsSaving(true);
     const cleanTitle = titleInput.trim() || "Untitled job";
     const cleanCompany = companyInput.trim() || "Unknown company";
     const cleanLocation = locationInput.trim();
+    const jobId = buildSessionJobId();
 
     saveUserJob({
-      id: buildSessionJobId(),
+      id: jobId,
       title: cleanTitle,
       company: cleanCompany,
       location: cleanLocation,
@@ -33,10 +38,11 @@ export default function AnalyzePage() {
       description: descriptionInput.trim(),
       requiredSkills: [],
     });
+    setSelectedJobId(jobId);
     logEvent("add_job", { jobTitle: cleanTitle });
-    logEvent("run_analysis", { jobTitle: cleanTitle });
     setMessage(`Saved "${cleanTitle}" to your jobs list.`);
     router.push("/batch");
+    setIsSaving(false);
   }
 
   return (
@@ -79,9 +85,10 @@ export default function AnalyzePage() {
           <button
             type="button"
             onClick={saveFromInput}
-            className="rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-zinc-800"
+            disabled={isSaving}
+            className="rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Analyze this job
+            {isSaving ? "Saving job..." : "Analyze this job"}
           </button>
         </div>
       </section>

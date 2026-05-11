@@ -5,14 +5,14 @@ import { useRouter } from "next/navigation";
 import { useIsClient } from "@/hooks/use-is-client";
 import { FitBadge } from "@/components/ui/fit-badge";
 import { PageHeader } from "@/components/ui/page-header";
+import { getReadyAnalysisForJob } from "@/lib/analysis-records";
 import {
   updateUserJob,
   getComputedJobAnalysesState,
   deleteUserJob,
   getAllStoredJobs,
-  getAnalyzedJobsState,
+  markPendingAnalysisJobId,
   setSelectedJobId,
-  type AnalyzedJobsState,
   type ComputedJobAnalysesState,
 } from "@/lib/job-session-store";
 import {
@@ -28,7 +28,6 @@ import type { JobPosting, JobStatus, JobStatusMap } from "@/types/coach";
 function readBatchPageState() {
   return {
     allJobs: getAllStoredJobs(jobs),
-    analyzedJobsState: getAnalyzedJobsState(),
     computedAnalysesState: getComputedJobAnalysesState(),
     jobStatuses: getStoredJobStatuses(),
     jobStatusTimestamps: getStoredJobStatusTimestamps(),
@@ -40,9 +39,6 @@ export default function BatchPage() {
   const isClient = useIsClient();
   const [allJobs, setAllJobs] = useState<JobPosting[]>(() =>
     typeof window === "undefined" ? jobs : readBatchPageState().allJobs,
-  );
-  const [analyzedJobsState, setAnalyzedJobsState] = useState<AnalyzedJobsState>(() =>
-    typeof window === "undefined" ? {} : readBatchPageState().analyzedJobsState,
   );
   const [computedAnalysesState, setComputedAnalysesState] = useState<ComputedJobAnalysesState>(() =>
     typeof window === "undefined" ? {} : readBatchPageState().computedAnalysesState,
@@ -63,27 +59,24 @@ export default function BatchPage() {
     const refresh = () => {
       const nextState = readBatchPageState();
       setAllJobs(nextState.allJobs);
-      setAnalyzedJobsState(nextState.analyzedJobsState);
       setComputedAnalysesState(nextState.computedAnalysesState);
       setJobStatuses(nextState.jobStatuses);
       setJobStatusTimestamps(nextState.jobStatusTimestamps);
     };
     window.addEventListener("storage", refresh);
     window.addEventListener("focus", refresh);
+    window.addEventListener("career-coach:analysis-updated", refresh);
     return () => {
       window.removeEventListener("storage", refresh);
       window.removeEventListener("focus", refresh);
+      window.removeEventListener("career-coach:analysis-updated", refresh);
     };
   }, []);
 
-  const staticAnalysisMap = useMemo(() => {
-    return new Map(analyses.map((analysis) => [analysis.jobId, analysis]));
-  }, []);
   const baseJobIds = useMemo(() => new Set(jobs.map((job) => job.id)), []);
 
   function refreshData() {
     setAllJobs(getAllStoredJobs(jobs));
-    setAnalyzedJobsState(getAnalyzedJobsState());
     setComputedAnalysesState(getComputedJobAnalysesState());
     setJobStatuses(getStoredJobStatuses());
     setJobStatusTimestamps(getStoredJobStatusTimestamps());
@@ -136,10 +129,10 @@ export default function BatchPage() {
         <ul className="mt-3 divide-y divide-zinc-100">
           {allJobs.map((job) => {
             const computed = computedAnalysesState[job.id];
-            const analysis = staticAnalysisMap.get(job.id) ?? (computed?.analysisState === "ready" ? computed : undefined);
-            const hasAnalysis = Boolean(analysis) || analyzedJobsState[job.id] === true;
+            const analysis = getReadyAnalysisForJob(job.id, computedAnalysesState, analyses);
+            const hasAnalysis = Boolean(analysis);
             const isUserAdded = !baseJobIds.has(job.id);
-            const status: JobStatus = jobStatuses[job.id] ?? (hasAnalysis ? "Analyzed" : "Analyzed");
+            const status: JobStatus | null = jobStatuses[job.id] ?? (hasAnalysis ? "Analyzed" : null);
             const appliedAt = jobStatusTimestamps[job.id];
             return (
               <li key={job.id} className="py-2.5 first:pt-0 last:pb-0">
@@ -147,10 +140,12 @@ export default function BatchPage() {
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-zinc-900">{job.title}</p>
                     <p className="text-xs text-zinc-500">{job.company} · {job.location || "No location"}</p>
-                    <p className="mt-0.5 text-[11px] text-zinc-500">
-                      Status: {status}
-                      {status === "Applied" && appliedAt ? ` · Applied ${new Date(appliedAt).toLocaleDateString()}` : ""}
-                    </p>
+                    {status && (
+                      <p className="mt-0.5 text-[11px] text-zinc-500">
+                        Status: {status}
+                        {status === "Applied" && appliedAt ? ` · Applied ${new Date(appliedAt).toLocaleDateString()}` : ""}
+                      </p>
+                    )}
                     {computed?.analysisState === "insufficient_evidence" && (
                       <div className="mt-0.5 flex items-center gap-2 text-[11px] text-zinc-500">
                         <span>Insufficient evidence for fit score.</span>
@@ -158,6 +153,7 @@ export default function BatchPage() {
                           type="button"
                           onClick={() => {
                             setSelectedJobId(job.id);
+                            markPendingAnalysisJobId(job.id);
                             router.push("/results");
                           }}
                           className="rounded-md border border-zinc-200 px-2 py-0.5 text-[11px] font-medium text-zinc-600 transition-colors hover:bg-zinc-50"
@@ -173,6 +169,9 @@ export default function BatchPage() {
                       type="button"
                       onClick={() => {
                         setSelectedJobId(job.id);
+                        if (!hasAnalysis) {
+                          markPendingAnalysisJobId(job.id);
+                        }
                         router.push("/results");
                       }}
                       className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50"

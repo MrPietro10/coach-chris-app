@@ -9,8 +9,25 @@ type AnalyzeSelectedJobRequestBody = {
   providerConfig?: ProviderConfigState;
 };
 
+function isResumeContext(
+  resumeContext: AnalyzeSelectedJobRequestBody["resumeContext"] | undefined,
+): resumeContext is AnalyzeSelectedJobInput["resumeContext"] {
+  if (!resumeContext) return false;
+  return (
+    Boolean(resumeContext.summary?.trim()) ||
+    resumeContext.skills.length > 0 ||
+    resumeContext.experienceHighlights.length > 0
+  );
+}
+
 export async function POST(request: Request) {
   try {
+    const geminiApiKey = process.env.GEMINI_API_KEY;
+    console.log(
+      "[single-job-analysis] GEMINI_API_KEY loaded:",
+      Boolean(geminiApiKey && geminiApiKey.trim().length > 0),
+    );
+
     const body = (await request.json()) as Partial<AnalyzeSelectedJobRequestBody>;
     console.log("API RECEIVED:", body);
     if (!body.selectedJob?.jobId || !body.selectedJob?.title || !body.selectedJob?.company) {
@@ -19,14 +36,15 @@ export async function POST(request: Request) {
     if (!body.selectedJob.description?.trim()) {
       return NextResponse.json({ error: "Selected job description is required." }, { status: 400 });
     }
-    if (!body.resumeContext?.summary?.trim()) {
-      return NextResponse.json({ error: "Resume summary is required." }, { status: 400 });
+    const resumeContext = body.resumeContext;
+    if (!isResumeContext(resumeContext)) {
+      return NextResponse.json({ error: "Resume context is required." }, { status: 400 });
     }
 
     const response = await analyzeSelectedJob(
       {
         selectedJob: body.selectedJob,
-        resumeContext: body.resumeContext,
+        resumeContext,
         fitContext: body.fitContext,
         optimizeContext: body.optimizeContext,
       },

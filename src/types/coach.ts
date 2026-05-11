@@ -1,5 +1,5 @@
 export type FitCategory =
-  | "No Fit"
+  | "Low Fit"
   | "Aspirational Fit"
   | "Backup Fit"
   | "Strong Fit";

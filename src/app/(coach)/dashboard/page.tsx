@@ -1,13 +1,19 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useIsClient } from "@/hooks/use-is-client";
 import { FitBadge } from "@/components/ui/fit-badge";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatCard } from "@/components/ui/stat-card";
+import { getReadyAnalysisForJob } from "@/lib/analysis-records";
+import {
+  getActiveResumeLabel,
+  getAllStoredJobs,
+  getAnalyzedJobsState,
+  getComputedJobAnalysesState,
+} from "@/lib/job-session-store";
 import {
   analyses,
-  currentResume,
   getStoredJobStatuses,
   jobs,
   saveJobStatuses,
@@ -40,35 +46,87 @@ const STAGE_BAR_ACTIVE: Record<JobStatus, string> = {
 
 type GroupedItem = { job: JobPosting; analysis: JobAnalysis };
 
+function readDashboardState() {
+  const trackedJobs = getAllStoredJobs(jobs);
+  const computedAnalyses = getComputedJobAnalysesState();
+  const analyzedJobsState = getAnalyzedJobsState();
+  const analyzedItems: GroupedItem[] = [];
+  for (const job of trackedJobs) {
+    const analysis = getReadyAnalysisForJob(job.id, computedAnalyses, analyses);
+    if (!analysis && !analyzedJobsState[job.id]) continue;
+    if (!analysis) continue;
+    analyzedItems.push({ job, analysis });
+  }
+
+  return {
+    trackedJobs,
+    analyzedItems,
+    activeResumeLabel: getActiveResumeLabel(),
+    statuses: getStoredJobStatuses(),
+  };
+}
+
 export default function DashboardPage() {
   const isClient = useIsClient();
-  const [statuses, setStatuses] = useState<Record<string, JobStatus>>(() =>
-    typeof window === "undefined" ? {} : getStoredJobStatuses(),
+  const [dashboardState, setDashboardState] = useState(() =>
+    typeof window === "undefined"
+      ? {
+          trackedJobs: jobs,
+          analyzedItems: [] as GroupedItem[],
+          activeResumeLabel: "Not added",
+          statuses: {} as Record<string, JobStatus>,
+        }
+      : readDashboardState(),
   );
 
   useEffect(() => {
     if (!isClient) return;
-    saveJobStatuses(statuses);
-  }, [isClient, statuses]);
+
+    const refresh = () => {
+      setDashboardState(readDashboardState());
+    };
+
+    refresh();
+    window.addEventListener("storage", refresh);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("career-coach:analysis-updated", refresh);
+    return () => {
+      window.removeEventListener("storage", refresh);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("career-coach:analysis-updated", refresh);
+    };
+  }, [isClient]);
+
+  useEffect(() => {
+    if (!isClient) return;
+    saveJobStatuses(dashboardState.statuses);
+  }, [dashboardState.statuses, isClient]);
 
   function updateStatus(jobId: string, status: JobStatus) {
-    setStatuses((prev) => ({ ...prev, [jobId]: status }));
+    setDashboardState((prev) => ({
+      ...prev,
+      statuses: { ...prev.statuses, [jobId]: status },
+    }));
   }
 
-  const grouped: Record<JobStatus, GroupedItem[]> = {
-    Analyzed: [],
-    Applied: [],
-    "For Interview": [],
-  };
+  const grouped = useMemo(() => {
+    const next: Record<JobStatus, GroupedItem[]> = {
+      Analyzed: [],
+      Applied: [],
+      "For Interview": [],
+    };
 
-  for (const analysis of analyses) {
-    const job = jobs.find((j) => j.id === analysis.jobId);
-    if (!job) continue;
-    const status = statuses[job.id] ?? "Analyzed";
-    grouped[status].push({ job, analysis });
-  }
+    for (const item of dashboardState.analyzedItems) {
+      const status = dashboardState.statuses[item.job.id] ?? "Analyzed";
+      next[status].push(item);
+    }
 
-  const strongFits = analyses.filter((a) => a.fit === "Strong Fit").length;
+    return next;
+  }, [dashboardState.analyzedItems, dashboardState.statuses]);
+
+  const strongFits = dashboardState.analyzedItems.filter(
+    (item) => item.analysis.fit === "Strong Fit",
+  ).length;
   const inInterview = grouped["For Interview"].length;
 
   if (!isClient) {
@@ -83,20 +141,18 @@ export default function DashboardPage() {
       />
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Active resume" value={currentResume.fileName} />
-        <StatCard label="Jobs tracked" value={`${jobs.length}`} />
+        <StatCard label="Active resume" value={dashboardState.activeResumeLabel} />
+        <StatCard label="Jobs tracked" value={`${dashboardState.trackedJobs.length}`} />
         <StatCard label="Strong fits" value={`${strongFits}`} />
         <StatCard label="In interview" value={`${inInterview}`} />
       </div>
 
-      {/* ── Pipeline ── */}
       <section className="rounded-xl border border-zinc-200/80 bg-white p-5">
         <h2 className="text-sm font-medium text-zinc-900">Pipeline</h2>
         <p className="mt-1 text-xs text-zinc-400">
           Your application stages at a glance
         </p>
 
-        {/* Progress bar */}
         <div className="mt-4 flex items-center gap-0 overflow-x-auto pb-1">
           {STAGES.map((stage, i) => {
             const count = grouped[stage].length;
@@ -129,13 +185,11 @@ export default function DashboardPage() {
           })}
         </div>
 
-        {/* Grouped sections */}
         <div className="mt-6 space-y-5">
           {STAGES.map((stage) => {
             const items = grouped[stage];
             return (
               <div key={stage}>
-                {/* Section header */}
                 <div className="flex items-center gap-2">
                   <span
                     className={`h-2 w-2 rounded-full ${STAGE_DOT[stage]}`}
@@ -221,7 +275,6 @@ export default function DashboardPage() {
         </div>
       </section>
 
-      {/* ── Next steps ── */}
       <section className="rounded-xl border border-zinc-200/80 bg-white p-5">
         <h2 className="text-sm font-medium text-zinc-900">Next steps</h2>
         <ul className="mt-3 space-y-1.5 text-sm text-zinc-600">

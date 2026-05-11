@@ -9,17 +9,17 @@ import type {
 } from "@/types/coach";
 
 export const FIT_CATEGORIES: FitCategory[] = [
-  "No Fit",
+  "Low Fit",
   "Aspirational Fit",
   "Backup Fit",
   "Strong Fit",
 ];
 
 export const FIT_CATEGORY_META: Record<FitCategory, FitCategoryMeta> = {
-  "No Fit": {
-    label: "No Fit",
-    shortLabel: "No Fit",
-    description: "No relevant experience and no stated preference match.",
+  "Low Fit": {
+    label: "Low Fit",
+    shortLabel: "Low Fit",
+    description: "Limited relevant experience and weak preference alignment for this role.",
   },
   "Aspirational Fit": {
     label: "Aspirational Fit",
@@ -39,7 +39,7 @@ export const FIT_CATEGORY_META: Record<FitCategory, FitCategoryMeta> = {
 };
 
 export function resolveFitCategory(signal: FitSignal): FitCategory {
-  if (!signal.hasExperience && !signal.hasPreference) return "No Fit";
+  if (!signal.hasExperience && !signal.hasPreference) return "Low Fit";
   if (!signal.hasExperience && signal.hasPreference) return "Aspirational Fit";
   if (signal.hasExperience && !signal.hasPreference) return "Backup Fit";
   return "Strong Fit";
@@ -69,14 +69,14 @@ export function fitVerdict(fit: FitCategory): string {
       return "Safe option — apply";
     case "Aspirational Fit":
       return "Stretch role — apply selectively";
-    case "No Fit":
-      return "Not recommended";
+    case "Low Fit":
+      return "Low priority for now";
   }
 }
 
 export function fitColor(fit: FitCategory): string {
   switch (fit) {
-    case "No Fit":
+    case "Low Fit":
       return "bg-rose-50 text-rose-700 border-rose-200";
     case "Aspirational Fit":
       return "bg-amber-50 text-amber-700 border-amber-200";
@@ -91,6 +91,53 @@ export function getFitBand(score: number): FitBand {
   if (score <= 39) return "Low";
   if (score <= 69) return "Medium";
   return "High";
+}
+
+export function confidenceToAxisPercent(level: ConfidenceLevel): number {
+  if (level === "High") return 82;
+  if (level === "Medium") return 50;
+  return 18;
+}
+
+export function fitScoreToAxisPercent(score: number): number {
+  const normalized = Math.max(0, Math.min(100, score));
+  return 92 - normalized * 0.84;
+}
+
+export function getStoredOrInferredConfidence(input: {
+  storedConfidence?: ConfidenceLevel;
+  resumeCompleteness: number;
+  missingEvidenceCount: number;
+  keyRequirementEvidenceCount: number;
+  evidenceItems?: string[];
+}): ConfidenceLevel {
+  if (input.storedConfidence) return input.storedConfidence;
+  return inferConfidenceLevel({
+    resumeCompleteness: input.resumeCompleteness,
+    missingEvidenceCount: input.missingEvidenceCount,
+    keyRequirementEvidenceCount: input.keyRequirementEvidenceCount,
+    evidenceItems: input.evidenceItems,
+  });
+}
+
+export function explainConfidenceLevel(input: {
+  confidence: ConfidenceLevel;
+  missingEvidenceCount: number;
+  keyRequirementEvidenceCount: number;
+}): string {
+  if (input.confidence === "High") {
+    return "Confidence is high because the resume gives clear, role-relevant evidence across the main requirements.";
+  }
+
+  if (input.confidence === "Medium") {
+    return "Confidence is medium because the resume supports part of the role, but some evidence still needs to be clearer or more specific.";
+  }
+
+  if (input.missingEvidenceCount > 0 && input.keyRequirementEvidenceCount <= 1) {
+    return "Confidence is low because the resume only partially supports the role and some evidence is missing.";
+  }
+
+  return "Confidence is low because the resume does not yet give enough specific evidence to trust this fit read.";
 }
 
 export function inferConfidenceLevel(input: {
