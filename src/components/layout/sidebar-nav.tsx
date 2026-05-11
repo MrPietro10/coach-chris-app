@@ -17,15 +17,24 @@ const navItems = [
 function NavLinks({
   onNavigate,
   showAdminLink = false,
+  showProfileLink = false,
+  showOptimizeLink = false,
 }: {
   onNavigate?: () => void;
   showAdminLink?: boolean;
+  showProfileLink?: boolean;
+  showOptimizeLink?: boolean;
 }) {
   const pathname = usePathname();
+  const visibleNavItems = navItems.filter((item) => {
+    if (item.href === "/profile" && !showProfileLink) return false;
+    if (item.href === "/optimize" && !showOptimizeLink) return false;
+    return true;
+  });
 
   return (
     <nav className="flex flex-col gap-0.5">
-      {navItems.map((item) => {
+      {visibleNavItems.map((item) => {
         const active = pathname === item.href;
         return (
           <Link
@@ -59,15 +68,35 @@ function NavLinks({
   );
 }
 
-export function SidebarNav({ showAdminLink = false }: { showAdminLink?: boolean }) {
+export function SidebarNav({
+  showAdminLink = false,
+  showProfileLink = false,
+  showOptimizeLink = false,
+}: {
+  showAdminLink?: boolean;
+  showProfileLink?: boolean;
+  showOptimizeLink?: boolean;
+}) {
   return (
     <aside className="hidden w-44 shrink-0 lg:sticky lg:top-20 lg:block">
-      <NavLinks showAdminLink={showAdminLink} />
+      <NavLinks
+        showAdminLink={showAdminLink}
+        showProfileLink={showProfileLink}
+        showOptimizeLink={showOptimizeLink}
+      />
     </aside>
   );
 }
 
-export function MobileNav({ showAdminLink = false }: { showAdminLink?: boolean }) {
+export function MobileNav({
+  showAdminLink = false,
+  showProfileLink = false,
+  showOptimizeLink = false,
+}: {
+  showAdminLink?: boolean;
+  showProfileLink?: boolean;
+  showOptimizeLink?: boolean;
+}) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -81,7 +110,12 @@ export function MobileNav({ showAdminLink = false }: { showAdminLink?: boolean }
       </button>
       {open && (
         <div className="absolute right-4 top-14 z-50 w-44 rounded-xl border border-zinc-200 bg-white p-2 shadow-lg">
-          <NavLinks showAdminLink={showAdminLink} onNavigate={() => setOpen(false)} />
+          <NavLinks
+            showAdminLink={showAdminLink}
+            showProfileLink={showProfileLink}
+            showOptimizeLink={showOptimizeLink}
+            onNavigate={() => setOpen(false)}
+          />
         </div>
       )}
     </div>

@@ -1,4 +1,6 @@
-const ALPHA_CODE_STORAGE_KEY = "alphaCode";
+import { ADMIN_ACCESS_STORAGE_KEY } from "@/lib/admin-access-constants";
+
+export const ALPHA_CODE_STORAGE_KEY = "alphaCode";
 
 function normalizeCode(value: string): string {
   return value.trim().toLowerCase();
@@ -25,4 +27,6 @@ export function getStoredAlphaCode(): string | null {
 export function setStoredAlphaCode(enteredCode: string): void {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(ALPHA_CODE_STORAGE_KEY, enteredCode);
+  window.localStorage.removeItem(ADMIN_ACCESS_STORAGE_KEY);
+  void fetch("/api/admin-access", { method: "DELETE" });
 }

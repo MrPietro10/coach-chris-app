@@ -17,27 +17,32 @@ export class OpenAIProvider implements AIProvider {
   readonly id = "openai";
   readonly name = "OpenAI";
 
-  async analyzeJobFit(_input: AnalyzeJobFitInput): Promise<AnalyzeJobFitOutput> {
+  async analyzeJobFit(input: AnalyzeJobFitInput): Promise<AnalyzeJobFitOutput> {
+    void input;
     throw new ProviderNotImplementedError(this.id);
   }
 
-  async optimizeResume(_input: OptimizeResumeInput): Promise<OptimizeResumeOutput> {
+  async optimizeResume(input: OptimizeResumeInput): Promise<OptimizeResumeOutput> {
+    void input;
     throw new ProviderNotImplementedError(this.id);
   }
 
-  async generateCoachReply(_input: GenerateCoachReplyInput): Promise<GenerateCoachReplyOutput> {
+  async generateCoachReply(input: GenerateCoachReplyInput): Promise<GenerateCoachReplyOutput> {
+    void input;
     throw new ProviderNotImplementedError(this.id);
   }
 
   async analyzeSelectedJob(
-    _input: AnalyzeSelectedJobInput,
+    input: AnalyzeSelectedJobInput,
   ): Promise<AnalyzeSelectedJobOutput> {
+    void input;
     throw new ProviderNotImplementedError(this.id);
   }
 
   async generateInterviewQuestion(
-    _input: GenerateInterviewQuestionInput,
+    input: GenerateInterviewQuestionInput,
   ): Promise<GenerateInterviewQuestionOutput> {
+    void input;
     throw new ProviderNotImplementedError(this.id);
   }
 }

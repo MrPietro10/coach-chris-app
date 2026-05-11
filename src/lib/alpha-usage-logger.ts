@@ -1,3 +1,6 @@
+import { ADMIN_ACCESS_STORAGE_KEY } from "@/lib/admin-access-constants";
+import { ALPHA_CODE_STORAGE_KEY } from "@/lib/alpha-code-store";
+
 type AlphaLogEntry = {
   user: string;
   event: string;
@@ -56,10 +59,13 @@ function sanitizeMetadata(metadata: Record<string, unknown>): Record<string, unk
 export function logEvent(eventName: string, metadata: Record<string, unknown> = {}): void {
   if (typeof window === "undefined") return;
 
-  const alphaCode = window.localStorage.getItem("alphaCode") ?? "unknown";
+  const user =
+    window.localStorage.getItem(ADMIN_ACCESS_STORAGE_KEY) === "1"
+      ? "admin-pietro"
+      : (window.localStorage.getItem(ALPHA_CODE_STORAGE_KEY) ?? "unknown");
   const safeMetadata = sanitizeMetadata(metadata);
   const entry: AlphaLogEntry = {
-    user: alphaCode,
+    user,
     event: eventName,
     metadata: safeMetadata,
     timestamp: new Date().toISOString(),

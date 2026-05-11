@@ -1,4 +1,4 @@
-import type { FitCategory, JobAnalysis, JobPosting } from "@/types/coach";
+import type { FitCategory, JobAnalysis, JobPosting, ProfileData } from "@/types/coach";
 
 const USER_JOBS_STORAGE_KEY = "career-coach.user-jobs";
 const SELECTED_JOB_STORAGE_KEY = "career-coach.selected-job-id";
@@ -265,4 +265,103 @@ export function deleteUserJob(jobId: string): void {
   if (getSelectedJobId() === jobId) {
     clearSelectedJobId();
   }
+}
+
+const RESUME_INPUT_STORAGE_KEY = "career-coach.resume-input";
+
+export type StoredResumeInput = {
+  summary: string;
+  skills: string;
+  highlights: string;
+};
+
+const EMPTY_RESUME_INPUT: StoredResumeInput = {
+  summary: "",
+  skills: "",
+  highlights: "",
+};
+
+export function getStoredResumeInput(): StoredResumeInput {
+  if (!isBrowser()) return { ...EMPTY_RESUME_INPUT };
+  const parsed = parseJson<Partial<StoredResumeInput>>(
+    window.localStorage.getItem(RESUME_INPUT_STORAGE_KEY),
+  );
+  if (!parsed) return { ...EMPTY_RESUME_INPUT };
+  return {
+    summary: typeof parsed.summary === "string" ? parsed.summary : "",
+    skills: typeof parsed.skills === "string" ? parsed.skills : "",
+    highlights: typeof parsed.highlights === "string" ? parsed.highlights : "",
+  };
+}
+
+export function saveStoredResumeInput(input: StoredResumeInput): void {
+  if (!isBrowser()) return;
+  window.localStorage.setItem(
+    RESUME_INPUT_STORAGE_KEY,
+    JSON.stringify({
+      summary: input.summary.trim(),
+      skills: input.skills.trim(),
+      highlights: input.highlights.trim(),
+    }),
+  );
+}
+
+export function hasStoredResumeInput(): boolean {
+  const input = getStoredResumeInput();
+  return (
+    input.summary.trim().length > 0 ||
+    input.skills.trim().length > 0 ||
+    input.highlights.trim().length > 0
+  );
+}
+
+const PROFILE_STORAGE_KEY = "career-coach.profile";
+
+const EMPTY_PROFILE: ProfileData = {
+  fullName: "",
+  location: "",
+  workPermit: "",
+  languages: [],
+  desiredIndustries: [],
+  desiredRoles: [],
+  activeResumeId: "",
+};
+
+export function getStoredProfile(): ProfileData {
+  if (!isBrowser()) return { ...EMPTY_PROFILE };
+  const parsed = parseJson<Partial<ProfileData>>(window.localStorage.getItem(PROFILE_STORAGE_KEY));
+  if (!parsed) return { ...EMPTY_PROFILE };
+  return {
+    fullName: typeof parsed.fullName === "string" ? parsed.fullName : "",
+    location: typeof parsed.location === "string" ? parsed.location : "",
+    workPermit: typeof parsed.workPermit === "string" ? parsed.workPermit : "",
+    languages: Array.isArray(parsed.languages)
+      ? parsed.languages.filter((item): item is string => typeof item === "string")
+      : [],
+    desiredIndustries: Array.isArray(parsed.desiredIndustries)
+      ? parsed.desiredIndustries.filter((item): item is string => typeof item === "string")
+      : [],
+    desiredRoles: Array.isArray(parsed.desiredRoles)
+      ? parsed.desiredRoles.filter((item): item is string => typeof item === "string")
+      : [],
+    activeResumeId: typeof parsed.activeResumeId === "string" ? parsed.activeResumeId : "",
+  };
+}
+
+export function saveStoredProfile(profile: ProfileData): void {
+  if (!isBrowser()) return;
+  window.localStorage.setItem(
+    PROFILE_STORAGE_KEY,
+    JSON.stringify({
+      fullName: profile.fullName.trim(),
+      location: profile.location.trim(),
+      workPermit: profile.workPermit.trim(),
+      languages: profile.languages.map((item) => item.trim()).filter((item) => item.length > 0),
+      desiredIndustries: profile.desiredIndustries
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0),
+      desiredRoles: profile.desiredRoles.map((item) => item.trim()).filter((item) => item.length > 0),
+      activeResumeId: profile.activeResumeId.trim(),
+    }),
+  );
 }

@@ -8,6 +8,7 @@ import {
   getComputedJobAnalysesState,
   getAllStoredJobs,
   getAnalyzedJobsState,
+  getStoredResumeInput,
   getSelectedJobId,
   setComputedJobAnalysis,
   setJobAnalyzed,
@@ -237,27 +238,6 @@ function highlightMetricPlaceholders(text: string) {
     }
     return part;
   });
-}
-
-function renderAnalysisList(
-  items: string[],
-  bulletClassName: string,
-  emptyMessage: string,
-) {
-  if (items.length === 0) {
-    return <p className="mt-2 text-sm text-zinc-500">{emptyMessage}</p>;
-  }
-
-  return (
-    <ul className="mt-2 space-y-1.5 text-sm text-zinc-700">
-      {items.map((item) => (
-        <li key={item} className="flex items-start gap-2">
-          <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${bulletClassName}`} />
-          {item}
-        </li>
-      ))}
-    </ul>
-  );
 }
 
 function inferComputedFitLabel(payload: AnalyzeSelectedJobOutput): FitCategory | null {
@@ -512,6 +492,12 @@ export default function ResultsPage() {
       setAnalyzedJobsState(getAnalyzedJobsState());
       setComputedAnalysesState(getComputedJobAnalysesState());
     };
+    const storedResume = getStoredResumeInput();
+    if (storedResume.summary || storedResume.skills || storedResume.highlights) {
+      setResumeSummaryInput(storedResume.summary);
+      setResumeSkillsInput(storedResume.skills);
+      setResumeHighlightsInput(storedResume.highlights);
+    }
     refreshJobs();
     setMounted(true);
     window.addEventListener("storage", refreshJobs);
@@ -1074,6 +1060,9 @@ export default function ResultsPage() {
               Copy resume
             </button>
           </div>
+          {copyResumeNotice && (
+            <p className="mt-2 text-xs text-zinc-600">{copyResumeNotice}</p>
+          )}
           <p className="mt-2 text-xs text-zinc-500">
             Uses the resume you edit on this page for the currently selected role.
           </p>

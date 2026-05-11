@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useState } from "react";
+import { useIsClient } from "@/hooks/use-is-client";
 import { FitBadge } from "@/components/ui/fit-badge";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatCard } from "@/components/ui/stat-card";
@@ -40,18 +41,15 @@ const STAGE_BAR_ACTIVE: Record<JobStatus, string> = {
 type GroupedItem = { job: JobPosting; analysis: JobAnalysis };
 
 export default function DashboardPage() {
-  const [mounted, setMounted] = useState(false);
-  const [statuses, setStatuses] = useState<Record<string, JobStatus>>({});
+  const isClient = useIsClient();
+  const [statuses, setStatuses] = useState<Record<string, JobStatus>>(() =>
+    typeof window === "undefined" ? {} : getStoredJobStatuses(),
+  );
 
   useEffect(() => {
-    setStatuses(getStoredJobStatuses());
-    setMounted(true);
-  }, []);
-
-  useEffect(() => {
-    if (!mounted) return;
+    if (!isClient) return;
     saveJobStatuses(statuses);
-  }, [mounted, statuses]);
+  }, [isClient, statuses]);
 
   function updateStatus(jobId: string, status: JobStatus) {
     setStatuses((prev) => ({ ...prev, [jobId]: status }));
@@ -73,7 +71,7 @@ export default function DashboardPage() {
   const strongFits = analyses.filter((a) => a.fit === "Strong Fit").length;
   const inInterview = grouped["For Interview"].length;
 
-  if (!mounted) {
+  if (!isClient) {
     return null;
   }
 

@@ -1,3 +1,5 @@
+"use client";
+
 import { MobileNav, SidebarNav } from "@/components/layout/sidebar-nav";
 import { ChrisAssistant } from "@/components/layout/chris-assistant";
 import { ExportUsageLogsButton } from "@/components/layout/export-usage-logs-button";
@@ -5,10 +7,14 @@ import { ExportUsageLogsButton } from "@/components/layout/export-usage-logs-but
 export function AppShell({
   children,
   isAdmin = false,
+  adminDisplayName = "Pietro S.",
 }: {
   children: React.ReactNode;
   isAdmin?: boolean;
+  adminDisplayName?: string;
 }) {
+  const userLabel = isAdmin ? adminDisplayName : "Alpha user";
+
   return (
     <div className="min-h-screen">
       <header className="sticky top-0 z-40 border-b border-zinc-200/60 bg-white/90 backdrop-blur-sm">
@@ -23,17 +29,25 @@ export function AppShell({
           </div>
           <div className="flex items-center gap-2">
             <ExportUsageLogsButton />
-            <MobileNav showAdminLink={isAdmin} />
+            <MobileNav
+              showAdminLink={isAdmin}
+              showProfileLink={isAdmin}
+              showOptimizeLink={isAdmin}
+            />
             <div className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm text-zinc-600">
               <span className="size-6 rounded-full bg-zinc-200" />
-              <span className="hidden font-medium sm:inline">Pietro S.</span>
+              <span className="hidden font-medium sm:inline">{userLabel}</span>
             </div>
           </div>
         </div>
       </header>
 
       <div className="mx-auto flex w-full max-w-6xl gap-8 px-5 py-8">
-        <SidebarNav showAdminLink={isAdmin} />
+        <SidebarNav
+          showAdminLink={isAdmin}
+          showProfileLink={isAdmin}
+          showOptimizeLink={isAdmin}
+        />
         <main className="flex min-w-0 flex-1 flex-col gap-6">{children}</main>
       </div>
 

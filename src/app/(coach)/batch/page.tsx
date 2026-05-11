@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useIsClient } from "@/hooks/use-is-client";
 import { FitBadge } from "@/components/ui/fit-badge";
 import { PageHeader } from "@/components/ui/page-header";
 import {
@@ -24,14 +25,34 @@ import {
 } from "@/mock-data/career-coach";
 import type { JobPosting, JobStatus, JobStatusMap } from "@/types/coach";
 
+function readBatchPageState() {
+  return {
+    allJobs: getAllStoredJobs(jobs),
+    analyzedJobsState: getAnalyzedJobsState(),
+    computedAnalysesState: getComputedJobAnalysesState(),
+    jobStatuses: getStoredJobStatuses(),
+    jobStatusTimestamps: getStoredJobStatusTimestamps(),
+  };
+}
+
 export default function BatchPage() {
   const router = useRouter();
-  const [mounted, setMounted] = useState(false);
-  const [allJobs, setAllJobs] = useState<JobPosting[]>(jobs);
-  const [analyzedJobsState, setAnalyzedJobsState] = useState<AnalyzedJobsState>({});
-  const [computedAnalysesState, setComputedAnalysesState] = useState<ComputedJobAnalysesState>({});
-  const [jobStatuses, setJobStatuses] = useState<JobStatusMap>({});
-  const [jobStatusTimestamps, setJobStatusTimestamps] = useState<JobStatusTimestampMap>({});
+  const isClient = useIsClient();
+  const [allJobs, setAllJobs] = useState<JobPosting[]>(() =>
+    typeof window === "undefined" ? jobs : readBatchPageState().allJobs,
+  );
+  const [analyzedJobsState, setAnalyzedJobsState] = useState<AnalyzedJobsState>(() =>
+    typeof window === "undefined" ? {} : readBatchPageState().analyzedJobsState,
+  );
+  const [computedAnalysesState, setComputedAnalysesState] = useState<ComputedJobAnalysesState>(() =>
+    typeof window === "undefined" ? {} : readBatchPageState().computedAnalysesState,
+  );
+  const [jobStatuses, setJobStatuses] = useState<JobStatusMap>(() =>
+    typeof window === "undefined" ? {} : readBatchPageState().jobStatuses,
+  );
+  const [jobStatusTimestamps, setJobStatusTimestamps] = useState<JobStatusTimestampMap>(() =>
+    typeof window === "undefined" ? {} : readBatchPageState().jobStatusTimestamps,
+  );
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editCompany, setEditCompany] = useState("");
@@ -40,14 +61,13 @@ export default function BatchPage() {
 
   useEffect(() => {
     const refresh = () => {
-      setAllJobs(getAllStoredJobs(jobs));
-      setAnalyzedJobsState(getAnalyzedJobsState());
-      setComputedAnalysesState(getComputedJobAnalysesState());
-      setJobStatuses(getStoredJobStatuses());
-      setJobStatusTimestamps(getStoredJobStatusTimestamps());
+      const nextState = readBatchPageState();
+      setAllJobs(nextState.allJobs);
+      setAnalyzedJobsState(nextState.analyzedJobsState);
+      setComputedAnalysesState(nextState.computedAnalysesState);
+      setJobStatuses(nextState.jobStatuses);
+      setJobStatusTimestamps(nextState.jobStatusTimestamps);
     };
-    refresh();
-    setMounted(true);
     window.addEventListener("storage", refresh);
     window.addEventListener("focus", refresh);
     return () => {
@@ -77,7 +97,7 @@ export default function BatchPage() {
     setEditDescription(job.description);
   }
 
-  if (!mounted) {
+  if (!isClient) {
     return null;
   }
 
@@ -90,7 +110,28 @@ export default function BatchPage() {
       <section className="rounded-xl border border-zinc-200/80 bg-white p-5">
         <h2 className="text-sm font-medium text-zinc-900">Saved jobs</h2>
         {allJobs.length === 0 ? (
-          <p className="mt-3 text-sm text-zinc-500">Start by adding your first job</p>
+          <div className="mt-3 rounded-lg border border-zinc-100 bg-zinc-50/60 px-4 py-4">
+            <p className="text-sm text-zinc-600">Start by adding your first job.</p>
+            <p className="mt-1 text-xs text-zinc-500">
+              Paste a job description in Analyze after your resume is ready. Saved roles will show up here.
+            </p>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => router.push("/analyze")}
+                className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-800"
+              >
+                Add your first job
+              </button>
+              <button
+                type="button"
+                onClick={() => router.push("/resume")}
+                className="rounded-lg border border-zinc-200 px-4 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-50"
+              >
+                Go to resume
+              </button>
+            </div>
+          </div>
         ) : (
         <ul className="mt-3 divide-y divide-zinc-100">
           {allJobs.map((job) => {

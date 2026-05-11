@@ -313,9 +313,6 @@ function roleInterviewQuestions(job: InterviewJob, prep: InterviewPrepContext): 
     `What is one difficult trade-off in this role, and how would you handle it?`,
   ];
 }
-function firstGeneralInterviewQuestion(): string {
-  return "Let’s begin. Walk me through your background and the role transition you are targeting right now.";
-}
 function firstRoleInterviewQuestion(job: InterviewJob, prep: InterviewPrepContext): string {
   if (prep.topGaps.length > 0) {
     const firstGapQuestion = buildGapFocusedQuestion(job, prep.topGaps[0]);
@@ -341,11 +338,6 @@ function nextQuestion(
     },
   );
   return questions[index % questions.length];
-}
-function buildShortFeedback(answer: string): string {
-  if (answer.trim().length < 80) return "Good start. Add one specific outcome.";
-  if (!/\d/.test(answer)) return "Clear answer. Add one metric for impact.";
-  return "Strong structure. Tighten your ending in one sentence.";
 }
 function tokenize(text: string): string[] {
   return text
@@ -1203,16 +1195,15 @@ export function ChrisAssistant() {
 
   const getLiveInterviewJobs = useCallback((): InterviewJob[] => {
     const liveJobs = getAllStoredJobs(jobs);
-    const liveStatuses = getStoredJobStatuses();
     return liveJobs
-      .filter((job) => liveStatuses[job.id] === "For Interview")
+      .filter((job) => statuses[job.id] === "For Interview")
       .map((job) => ({ id: job.id, title: job.title, company: job.company }));
-  }, []);
+  }, [statuses]);
 
   const pageContext = getPageContext(pathname);
-  const interviewJobs = useMemo<InterviewJob[]>(() => getLiveInterviewJobs(), [getLiveInterviewJobs, statuses]);
+  const interviewJobs = useMemo<InterviewJob[]>(() => getLiveInterviewJobs(), [getLiveInterviewJobs]);
   const selectedInterviewJob = interviewJobs.find((job) => job.id === selectedInterviewJobId) ?? null;
-  const liveJobsForSelection = useMemo(() => getAllStoredJobs(jobs), [statuses]);
+  const liveJobsForSelection = getAllStoredJobs(jobs);
   const selectedJobId =
     pathname.startsWith("/results")
       ? resultsJobContext?.jobId ?? null
@@ -1410,15 +1401,12 @@ export function ChrisAssistant() {
       pushMessages(userText, reply);
     },
     [
-      interviewJobs,
       messages,
       pageContext.label,
       pathname,
       pushMessages,
       resultsJobContext?.jobId,
       selectedInterviewJobId,
-      statuses,
-      getLiveInterviewJobs,
     ],
   );
 
@@ -1506,7 +1494,6 @@ export function ChrisAssistant() {
     },
     [
       getLiveInterviewJobs,
-      interviewJobs,
       interviewPhase,
       interviewTrack,
       pushMessages,
@@ -1918,14 +1905,20 @@ export function ChrisAssistant() {
       getQuestionTypeAwareFeedback,
       handleFreeformCoachReply,
       hasShownFallbackInInterview,
-      interviewJobs,
       interviewPhase,
       interviewTrack,
       freeformFallbackCount,
       activeInterviewQuestion,
+      lastAnswer,
+      liveJobsForSelection,
+      pathname,
+      prompts,
       pushMessages,
       questionIndex,
+      selectedAnalysis,
       selectedInterviewJobId,
+      selectedJobId,
+      selectedRoleConfidence,
     ],
   );
 
@@ -2015,10 +2008,7 @@ export function ChrisAssistant() {
     [
       getLiveInterviewJobs,
       getNextGeneralQuestion,
-      interviewJobs,
       interviewTrack,
-      lastAnswer,
-      activeInterviewQuestion,
       pushMessages,
       questionIndex,
       selectedInterviewJobId,
