@@ -980,29 +980,31 @@ ${recommendation}`;
 function buildLocalResultsFallbackResponse(options: {
   userText: string;
   roleLabel: string;
-  analysis: JobAnalysis;
+  fitScore: number;
+  strengths: string[];
+  gaps: string[];
   confidence: PromptConfidenceLevel;
 }): string {
   const intent = classifyResultsIntent(options.userText);
   if (intent === "decision") {
     return buildFitConfidenceDecisionResponse({
-      fitScore: options.analysis.score,
+      fitScore: options.fitScore,
       confidence: options.confidence,
       roleLabel: options.roleLabel,
     });
   }
   if (intent === "fit_explanation") {
     return buildFitExplanationResponse({
-      fitScore: options.analysis.score,
+      fitScore: options.fitScore,
       confidence: options.confidence,
-      strengths: options.analysis.strengths,
-      gaps: options.analysis.gaps,
+      strengths: options.strengths,
+      gaps: options.gaps,
       roleTitle: options.roleLabel,
     });
   }
-  const topStrength = options.analysis.strengths[0] ?? "your profile has relevant overlap";
-  const topGap = options.analysis.gaps[0] ?? "evidence is still light on outcomes";
-  return `${options.roleLabel} fit is ${getSimpleFitLevel(options.analysis.score)} (${options.analysis.score}).
+  const topStrength = options.strengths[0] ?? "your profile has relevant overlap";
+  const topGap = options.gaps[0] ?? "evidence is still light on outcomes";
+  return `${options.roleLabel} fit is ${getSimpleFitLevel(options.fitScore)} (${options.fitScore}).
 
 Fit summary:
 You have some relevant overlap, but the signal is not complete yet.
@@ -1892,7 +1894,9 @@ export function ChrisAssistant() {
             buildLocalResultsFallbackResponse({
               userText,
               roleLabel,
-              analysis: selectedAnalysis,
+              fitScore: selectedAnalysis.score,
+              strengths: selectedAnalysis.strengths,
+              gaps: selectedAnalysis.gaps,
               confidence: selectedRoleConfidence,
             }),
           );
