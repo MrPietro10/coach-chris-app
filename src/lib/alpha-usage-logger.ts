@@ -1,3 +1,8 @@
+import { readAlphaScopedStorageItem, writeAlphaScopedStorageItem } from "@/lib/alpha-scoped-storage";
+import {
+  ADMIN_ALPHA_STORAGE_NAMESPACE,
+  getActiveAlphaStorageNamespace,
+} from "@/lib/alpha-session-store";
 import { ADMIN_ACCESS_STORAGE_KEY } from "@/lib/admin-access-constants";
 
 type AlphaLogEntry = {
@@ -7,11 +12,9 @@ type AlphaLogEntry = {
   timestamp: string;
 };
 
-const ALPHA_LOGS_STORAGE_KEY = "alphaLogs";
-
 function getStoredLogs(): AlphaLogEntry[] {
   if (typeof window === "undefined") return [];
-  const raw = window.localStorage.getItem(ALPHA_LOGS_STORAGE_KEY);
+  const raw = readAlphaScopedStorageItem("usage-logs");
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw) as unknown;
@@ -58,10 +61,13 @@ function sanitizeMetadata(metadata: Record<string, unknown>): Record<string, unk
 export function logEvent(eventName: string, metadata: Record<string, unknown> = {}): void {
   if (typeof window === "undefined") return;
 
+  const activeNamespace = getActiveAlphaStorageNamespace();
+  if (!activeNamespace) return;
+
   const user =
     window.localStorage.getItem(ADMIN_ACCESS_STORAGE_KEY) === "1"
-      ? "admin-pietro"
-      : "alpha-user";
+      ? ADMIN_ALPHA_STORAGE_NAMESPACE
+      : activeNamespace;
   const safeMetadata = sanitizeMetadata(metadata);
   const entry: AlphaLogEntry = {
     user,
@@ -71,7 +77,7 @@ export function logEvent(eventName: string, metadata: Record<string, unknown> = 
   };
 
   const nextLogs = [...getStoredLogs(), entry];
-  window.localStorage.setItem(ALPHA_LOGS_STORAGE_KEY, JSON.stringify(nextLogs));
+  writeAlphaScopedStorageItem("usage-logs", JSON.stringify(nextLogs));
   void fetch("/api/log", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

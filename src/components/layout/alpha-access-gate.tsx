@@ -4,6 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useIsClient } from "@/hooks/use-is-client";
 import { clearPersistedAlphaCode } from "@/lib/alpha-code-store";
+import {
+  clearActiveAlphaStorageNamespace,
+  setActiveAlphaStorageNamespace,
+} from "@/lib/alpha-session-store";
 
 export function AlphaAccessGate({
   children,
@@ -24,7 +28,10 @@ export function AlphaAccessGate({
 
   useEffect(() => {
     clearPersistedAlphaCode();
-  }, []);
+    if (!adminSessionActive) {
+      clearActiveAlphaStorageNamespace();
+    }
+  }, [adminSessionActive]);
 
   if (!isClient) {
     return null;
@@ -55,6 +62,7 @@ export function AlphaAccessGate({
         return;
       }
 
+      setActiveAlphaStorageNamespace(enteredCode);
       setAlphaUnlocked(true);
       router.push("/resume");
     } catch {

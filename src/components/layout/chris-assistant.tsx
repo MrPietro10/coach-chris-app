@@ -21,6 +21,7 @@ import {
   getComputedJobAnalysesState,
   getSelectedJobId,
 } from "@/lib/job-session-store";
+import { ALPHA_SESSION_CHANGED_EVENT } from "@/lib/alpha-session-store";
 import { inferConfidenceLevel } from "@/utils/fit";
 
 function getPageContext(pathname: string): { label: string; hint: string } {
@@ -2046,18 +2047,27 @@ export function ChrisAssistant() {
     submitChatMessage(inputValue);
   }
 
+  const resetChatSession = useCallback(() => {
+    setMessages([]);
+    setInputValue("");
+    finishSubmitting();
+    setInterviewTrack(null);
+    setInterviewPhase("idle");
+    setQuestionIndex(0);
+    setLastAnswer("");
+    setActiveInterviewQuestion(null);
+    setHasShownFallbackInInterview(false);
+    setShowClearConfirm(false);
+    setFreeformFallbackCount(0);
+  }, [finishSubmitting]);
+
   useEffect(() => {
     const refreshState = () => {
       setStatuses(getStoredJobStatuses());
     };
     const onStorage = (event: StorageEvent) => {
-      if (
-        !event.key ||
-        event.key === "career-coach.job-statuses" ||
-        event.key === "career-coach.user-jobs"
-      ) {
-        refreshState();
-      }
+      if (!event.key || !event.key.startsWith("coachChris:")) return;
+      refreshState();
     };
     const onVisibility = () => {
       if (document.visibilityState === "visible") refreshState();
@@ -2065,13 +2075,15 @@ export function ChrisAssistant() {
     refreshState();
     window.addEventListener("storage", onStorage);
     window.addEventListener("focus", refreshState);
+    window.addEventListener(ALPHA_SESSION_CHANGED_EVENT, resetChatSession);
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("focus", refreshState);
+      window.removeEventListener(ALPHA_SESSION_CHANGED_EVENT, resetChatSession);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, []);
+  }, [resetChatSession]);
 
   useEffect(() => {
     function onAsk(e: Event) {

@@ -1,3 +1,7 @@
+import {
+  readAlphaScopedStorageItem,
+  writeAlphaScopedStorageItem,
+} from "@/lib/alpha-scoped-storage";
 import type {
   ChatMessage,
   CoachChatContext,
@@ -58,9 +62,6 @@ export const currentResume: ResumeData = ENABLE_MOCK_DATA ? currentResumeSeed : 
 export const jobs: JobPosting[] = ENABLE_MOCK_DATA ? [] : [];
 export const jobStatuses: JobStatusMap = ENABLE_MOCK_DATA ? {} : {};
 
-export const JOB_STATUS_STORAGE_KEY = "career-coach.job-statuses";
-export const JOB_STATUS_TIMESTAMP_STORAGE_KEY = "career-coach.job-status-timestamps";
-
 const ALL_JOB_STATUSES: JobStatus[] = [
   "Analyzed",
   "Applied",
@@ -72,7 +73,7 @@ export function getStoredJobStatuses(): JobStatusMap {
     return jobStatuses;
   }
 
-  const raw = window.localStorage.getItem(JOB_STATUS_STORAGE_KEY);
+  const raw = readAlphaScopedStorageItem("job-statuses");
   if (!raw) {
     return jobStatuses;
   }
@@ -95,7 +96,7 @@ export function saveJobStatuses(statuses: JobStatusMap): void {
   if (typeof window === "undefined") {
     return;
   }
-  window.localStorage.setItem(JOB_STATUS_STORAGE_KEY, JSON.stringify(statuses));
+  writeAlphaScopedStorageItem("job-statuses", JSON.stringify(statuses));
 }
 
 export type JobStatusTimestampMap = Record<string, string>;
@@ -104,7 +105,7 @@ export function getStoredJobStatusTimestamps(): JobStatusTimestampMap {
   if (typeof window === "undefined") {
     return {};
   }
-  const raw = window.localStorage.getItem(JOB_STATUS_TIMESTAMP_STORAGE_KEY);
+  const raw = readAlphaScopedStorageItem("job-status-timestamps");
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -124,7 +125,7 @@ export function saveJobStatusTimestamps(statuses: JobStatusTimestampMap): void {
   if (typeof window === "undefined") {
     return;
   }
-  window.localStorage.setItem(JOB_STATUS_TIMESTAMP_STORAGE_KEY, JSON.stringify(statuses));
+  writeAlphaScopedStorageItem("job-status-timestamps", JSON.stringify(statuses));
 }
 
 export function setStoredJobStatus(jobId: string, status: JobStatus): void {

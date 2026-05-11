@@ -1,8 +1,14 @@
 "use client";
 
+import { useEffect } from "react";
 import { MobileNav, SidebarNav } from "@/components/layout/sidebar-nav";
 import { ChrisAssistant } from "@/components/layout/chris-assistant";
 import { ExportUsageLogsButton } from "@/components/layout/export-usage-logs-button";
+import {
+  ADMIN_ALPHA_STORAGE_NAMESPACE,
+  clearActiveAlphaStorageNamespace,
+  setActiveAlphaStorageNamespace,
+} from "@/lib/alpha-session-store";
 
 export function AppShell({
   children,
@@ -14,6 +20,16 @@ export function AppShell({
   adminDisplayName?: string;
 }) {
   const userLabel = isAdmin ? adminDisplayName : "Alpha user";
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    setActiveAlphaStorageNamespace(ADMIN_ALPHA_STORAGE_NAMESPACE);
+  }, [isAdmin]);
+
+  function handleSwitchUser() {
+    clearActiveAlphaStorageNamespace();
+    window.location.reload();
+  }
 
   return (
     <div className="min-h-screen">
@@ -34,6 +50,15 @@ export function AppShell({
               showProfileLink={isAdmin}
               showOptimizeLink={isAdmin}
             />
+            {!isAdmin && (
+              <button
+                type="button"
+                onClick={handleSwitchUser}
+                className="rounded-lg border border-zinc-200 px-2.5 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-50"
+              >
+                Switch user
+              </button>
+            )}
             <div className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm text-zinc-600">
               <span className="size-6 rounded-full bg-zinc-200" />
               <span className="hidden font-medium sm:inline">{userLabel}</span>

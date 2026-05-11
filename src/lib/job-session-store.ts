@@ -1,3 +1,9 @@
+import {
+  readAlphaScopedStorageItem,
+  removeAlphaScopedStorageItem,
+  type AlphaScopedStorageResource,
+  writeAlphaScopedStorageItem,
+} from "@/lib/alpha-scoped-storage";
 import type {
   ConfidenceLevel,
   FitCategory,
@@ -5,12 +11,6 @@ import type {
   JobPosting,
   ProfileData,
 } from "@/types/coach";
-
-const USER_JOBS_STORAGE_KEY = "career-coach.user-jobs";
-const SELECTED_JOB_STORAGE_KEY = "career-coach.selected-job-id";
-const ANALYZED_JOBS_STORAGE_KEY = "career-coach.analyzed-jobs";
-const COMPUTED_ANALYSES_STORAGE_KEY = "career-coach.computed-analyses";
-const PENDING_ANALYSIS_JOB_STORAGE_KEY = "career-coach.pending-analysis-job-id";
 
 export type AnalyzedJobsState = Record<string, boolean>;
 export type ComputedAnalysisState = "ready" | "insufficient_evidence";
@@ -34,6 +34,18 @@ function parseJson<T>(raw: string | null): T | null {
   } catch {
     return null;
   }
+}
+
+function readScopedJson<T>(resource: AlphaScopedStorageResource): T | null {
+  return parseJson<T>(readAlphaScopedStorageItem(resource));
+}
+
+function writeScopedJson(resource: AlphaScopedStorageResource, value: unknown): void {
+  writeAlphaScopedStorageItem(resource, JSON.stringify(value));
+}
+
+function removeScoped(resource: AlphaScopedStorageResource): void {
+  removeAlphaScopedStorageItem(resource);
 }
 
 function isValidSource(value: string): value is JobPosting["source"] {
@@ -77,7 +89,7 @@ function sanitizeJob(job: Partial<JobPosting>): JobPosting | null {
 
 export function getStoredUserJobs(): JobPosting[] {
   if (!isBrowser()) return [];
-  const parsed = parseJson<Partial<JobPosting>[]>(window.localStorage.getItem(USER_JOBS_STORAGE_KEY));
+  const parsed = readScopedJson<Partial<JobPosting>[]>("jobs");
   if (!Array.isArray(parsed)) return [];
   return parsed
     .map((entry) => sanitizeJob(entry))
@@ -88,7 +100,7 @@ export function saveUserJob(job: JobPosting): void {
   if (!isBrowser()) return;
   const existing = getStoredUserJobs();
   if (existing.some((item) => item.id === job.id)) return;
-  window.localStorage.setItem(USER_JOBS_STORAGE_KEY, JSON.stringify([job, ...existing]));
+  writeScopedJson("jobs", [job, ...existing]);
 }
 
 export function getAllStoredJobs(baseJobs: JobPosting[]): JobPosting[] {
@@ -110,41 +122,39 @@ export function buildSessionJobId(prefix = "job_user"): string {
 
 export function getSelectedJobId(): string | null {
   if (!isBrowser()) return null;
-  const value = window.localStorage.getItem(SELECTED_JOB_STORAGE_KEY);
+  const value = readAlphaScopedStorageItem("selected-job");
   return value && value.trim().length > 0 ? value : null;
 }
 
 export function setSelectedJobId(jobId: string): void {
   if (!isBrowser()) return;
-  window.localStorage.setItem(SELECTED_JOB_STORAGE_KEY, jobId);
+  writeAlphaScopedStorageItem("selected-job", jobId);
 }
 
 export function markPendingAnalysisJobId(jobId: string): void {
   if (!isBrowser()) return;
-  window.localStorage.setItem(PENDING_ANALYSIS_JOB_STORAGE_KEY, jobId);
+  writeAlphaScopedStorageItem("pending-analysis-job", jobId);
 }
 
 export function getPendingAnalysisJobId(): string | null {
   if (!isBrowser()) return null;
-  const value = window.localStorage.getItem(PENDING_ANALYSIS_JOB_STORAGE_KEY);
+  const value = readAlphaScopedStorageItem("pending-analysis-job");
   return value && value.trim().length > 0 ? value : null;
 }
 
 export function clearPendingAnalysisJobId(): void {
   if (!isBrowser()) return;
-  window.localStorage.removeItem(PENDING_ANALYSIS_JOB_STORAGE_KEY);
+  removeScoped("pending-analysis-job");
 }
 
 export function clearSelectedJobId(): void {
   if (!isBrowser()) return;
-  window.localStorage.removeItem(SELECTED_JOB_STORAGE_KEY);
+  removeScoped("selected-job");
 }
 
 export function getAnalyzedJobsState(): AnalyzedJobsState {
   if (!isBrowser()) return {};
-  const parsed = parseJson<Record<string, unknown>>(
-    window.localStorage.getItem(ANALYZED_JOBS_STORAGE_KEY),
-  );
+  const parsed = readScopedJson<Record<string, unknown>>("analyzed-jobs");
   if (!parsed || typeof parsed !== "object") return {};
   const state: AnalyzedJobsState = {};
   for (const [jobId, value] of Object.entries(parsed)) {
@@ -157,7 +167,7 @@ export function setJobAnalyzed(jobId: string, analyzed: boolean): void {
   if (!isBrowser()) return;
   const current = getAnalyzedJobsState();
   current[jobId] = analyzed;
-  window.localStorage.setItem(ANALYZED_JOBS_STORAGE_KEY, JSON.stringify(current));
+  writeScopedJson("analyzed-jobs", current);
 }
 
 function sanitizeFit(value: unknown): FitCategory | null {
@@ -222,9 +232,7 @@ function sanitizeComputedJobAnalysis(
 
 export function getComputedJobAnalysesState(): ComputedJobAnalysesState {
   if (!isBrowser()) return {};
-  const parsed = parseJson<Record<string, Partial<ComputedJobAnalysis>>>(
-    window.localStorage.getItem(COMPUTED_ANALYSES_STORAGE_KEY),
-  );
+  const parsed = readScopedJson<Record<string, Partial<ComputedJobAnalysis>>>("analyses");
   if (!parsed || typeof parsed !== "object") return {};
   const out: ComputedJobAnalysesState = {};
   for (const [jobId, value] of Object.entries(parsed)) {
@@ -238,7 +246,7 @@ export function setComputedJobAnalysis(analysis: ComputedJobAnalysis): void {
   if (!isBrowser()) return;
   const current = getComputedJobAnalysesState();
   current[analysis.jobId] = analysis;
-  window.localStorage.setItem(COMPUTED_ANALYSES_STORAGE_KEY, JSON.stringify(current));
+  writeScopedJson("analyses", current);
 }
 
 export function clearJobAnalysisState(jobId: string): void {
@@ -246,13 +254,13 @@ export function clearJobAnalysisState(jobId: string): void {
   const analyzed = getAnalyzedJobsState();
   if (jobId in analyzed) {
     delete analyzed[jobId];
-    window.localStorage.setItem(ANALYZED_JOBS_STORAGE_KEY, JSON.stringify(analyzed));
+    writeScopedJson("analyzed-jobs", analyzed);
   }
 
   const computed = getComputedJobAnalysesState();
   if (jobId in computed) {
     delete computed[jobId];
-    window.localStorage.setItem(COMPUTED_ANALYSES_STORAGE_KEY, JSON.stringify(computed));
+    writeScopedJson("analyses", computed);
   }
 }
 
@@ -285,7 +293,7 @@ export function updateUserJob(
     );
   });
   if (!changed) return false;
-  window.localStorage.setItem(USER_JOBS_STORAGE_KEY, JSON.stringify(next));
+  writeScopedJson("jobs", next);
   clearJobAnalysisState(jobId);
   return true;
 }
@@ -295,7 +303,7 @@ export function deleteUserJob(jobId: string): void {
 
   const existing = getStoredUserJobs();
   const nextJobs = existing.filter((job) => job.id !== jobId);
-  window.localStorage.setItem(USER_JOBS_STORAGE_KEY, JSON.stringify(nextJobs));
+  writeScopedJson("jobs", nextJobs);
 
   clearJobAnalysisState(jobId);
 
@@ -303,8 +311,6 @@ export function deleteUserJob(jobId: string): void {
     clearSelectedJobId();
   }
 }
-
-const RESUME_INPUT_STORAGE_KEY = "career-coach.resume-input";
 
 export type StoredResumeInput = {
   summary: string;
@@ -320,9 +326,7 @@ const EMPTY_RESUME_INPUT: StoredResumeInput = {
 
 export function getStoredResumeInput(): StoredResumeInput {
   if (!isBrowser()) return { ...EMPTY_RESUME_INPUT };
-  const parsed = parseJson<Partial<StoredResumeInput>>(
-    window.localStorage.getItem(RESUME_INPUT_STORAGE_KEY),
-  );
+  const parsed = readScopedJson<Partial<StoredResumeInput>>("resume");
   if (!parsed) return { ...EMPTY_RESUME_INPUT };
   return {
     summary: typeof parsed.summary === "string" ? parsed.summary : "",
@@ -333,14 +337,11 @@ export function getStoredResumeInput(): StoredResumeInput {
 
 export function saveStoredResumeInput(input: StoredResumeInput): void {
   if (!isBrowser()) return;
-  window.localStorage.setItem(
-    RESUME_INPUT_STORAGE_KEY,
-    JSON.stringify({
-      summary: input.summary.trim(),
-      skills: input.skills.trim(),
-      highlights: input.highlights.trim(),
-    }),
-  );
+  writeScopedJson("resume", {
+    summary: input.summary.trim(),
+    skills: input.skills.trim(),
+    highlights: input.highlights.trim(),
+  });
 }
 
 export function hasStoredResumeInput(): boolean {
@@ -364,8 +365,6 @@ export function getActiveResumeLabel(): string {
   return "Resume added";
 }
 
-const PROFILE_STORAGE_KEY = "career-coach.profile";
-
 const EMPTY_PROFILE: ProfileData = {
   fullName: "",
   location: "",
@@ -378,7 +377,7 @@ const EMPTY_PROFILE: ProfileData = {
 
 export function getStoredProfile(): ProfileData {
   if (!isBrowser()) return { ...EMPTY_PROFILE };
-  const parsed = parseJson<Partial<ProfileData>>(window.localStorage.getItem(PROFILE_STORAGE_KEY));
+  const parsed = readScopedJson<Partial<ProfileData>>("profile");
   if (!parsed) return { ...EMPTY_PROFILE };
   return {
     fullName: typeof parsed.fullName === "string" ? parsed.fullName : "",
@@ -399,18 +398,15 @@ export function getStoredProfile(): ProfileData {
 
 export function saveStoredProfile(profile: ProfileData): void {
   if (!isBrowser()) return;
-  window.localStorage.setItem(
-    PROFILE_STORAGE_KEY,
-    JSON.stringify({
-      fullName: profile.fullName.trim(),
-      location: profile.location.trim(),
-      workPermit: profile.workPermit.trim(),
-      languages: profile.languages.map((item) => item.trim()).filter((item) => item.length > 0),
-      desiredIndustries: profile.desiredIndustries
-        .map((item) => item.trim())
-        .filter((item) => item.length > 0),
-      desiredRoles: profile.desiredRoles.map((item) => item.trim()).filter((item) => item.length > 0),
-      activeResumeId: profile.activeResumeId.trim(),
-    }),
-  );
+  writeScopedJson("profile", {
+    fullName: profile.fullName.trim(),
+    location: profile.location.trim(),
+    workPermit: profile.workPermit.trim(),
+    languages: profile.languages.map((item) => item.trim()).filter((item) => item.length > 0),
+    desiredIndustries: profile.desiredIndustries
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0),
+    desiredRoles: profile.desiredRoles.map((item) => item.trim()).filter((item) => item.length > 0),
+    activeResumeId: profile.activeResumeId.trim(),
+  });
 }
