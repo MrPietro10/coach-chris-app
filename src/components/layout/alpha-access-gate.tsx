@@ -1,14 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useIsClient } from "@/hooks/use-is-client";
-import {
-  getStoredAlphaCode,
-  isValidAlphaCode,
-  setStoredAlphaCode,
-} from "@/lib/alpha-code-store";
-import { isAdminAccessStored } from "@/lib/admin-access-store";
+import { clearPersistedAlphaCode } from "@/lib/alpha-code-store";
 
 export function AlphaAccessGate({
   children,
@@ -19,17 +14,17 @@ export function AlphaAccessGate({
 }) {
   const router = useRouter();
   const isClient = useIsClient();
-  const [alphaUnlocked, setAlphaUnlocked] = useState(() => {
-    if (typeof window === "undefined") return false;
-    if (isAdminAccessStored()) return true;
-    const storedCode = getStoredAlphaCode() ?? "";
-    return isValidAlphaCode(storedCode);
-  });
+  const [alphaUnlocked, setAlphaUnlocked] = useState(false);
   const [codeInput, setCodeInput] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const enteredCode = useMemo(() => codeInput.trim(), [codeInput]);
   const isUnlocked = adminSessionActive || alphaUnlocked;
+
+  useEffect(() => {
+    clearPersistedAlphaCode();
+  }, []);
 
   if (!isClient) {
     return null;
@@ -39,14 +34,34 @@ export function AlphaAccessGate({
     return <>{children}</>;
   }
 
-  function handleContinue() {
-    if (!isValidAlphaCode(enteredCode)) {
-      setError("Invalid access code.");
-      return;
+  async function handleContinue() {
+    if (isSubmitting) return;
+
+    setIsSubmitting(true);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/alpha-access", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code: enteredCode,
+          path: window.location.pathname,
+        }),
+      });
+
+      if (!response.ok) {
+        setError("Invalid access code.");
+        return;
+      }
+
+      setAlphaUnlocked(true);
+      router.push("/resume");
+    } catch {
+      setError("Unable to verify access code. Try again.");
+    } finally {
+      setIsSubmitting(false);
     }
-    setStoredAlphaCode(enteredCode);
-    setAlphaUnlocked(true);
-    router.push("/resume");
   }
 
   return (
@@ -60,7 +75,7 @@ export function AlphaAccessGate({
           className="mt-4"
           onSubmit={(event) => {
             event.preventDefault();
-            handleContinue();
+            void handleContinue();
           }}
         >
           <input
@@ -75,9 +90,10 @@ export function AlphaAccessGate({
           />
           <button
             type="submit"
-            className="mt-3 w-full rounded-lg bg-zinc-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-800"
+            disabled={isSubmitting}
+            className="mt-3 w-full rounded-lg bg-zinc-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Continue
+            {isSubmitting ? "Verifying..." : "Continue"}
           </button>
         </form>
         {error && <p className="mt-2 text-xs text-rose-600">{error}</p>}

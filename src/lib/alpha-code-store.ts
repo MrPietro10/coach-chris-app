@@ -1,8 +1,6 @@
-import { ADMIN_ACCESS_STORAGE_KEY } from "@/lib/admin-access-constants";
-
 export const ALPHA_CODE_STORAGE_KEY = "alphaCode";
 
-function normalizeCode(value: string): string {
+export function normalizeAlphaCode(value: string): string {
   return value.trim().toLowerCase();
 }
 
@@ -15,18 +13,11 @@ export const VALID_CODES = [
 ] as const;
 
 export function isValidAlphaCode(value: string): boolean {
-  const normalized = normalizeCode(value);
+  const normalized = normalizeAlphaCode(value);
   return VALID_CODES.includes(normalized as (typeof VALID_CODES)[number]);
 }
 
-export function getStoredAlphaCode(): string | null {
-  if (typeof window === "undefined") return null;
-  return window.localStorage.getItem(ALPHA_CODE_STORAGE_KEY);
-}
-
-export function setStoredAlphaCode(enteredCode: string): void {
+export function clearPersistedAlphaCode(): void {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(ALPHA_CODE_STORAGE_KEY, enteredCode);
-  window.localStorage.removeItem(ADMIN_ACCESS_STORAGE_KEY);
-  void fetch("/api/admin-access", { method: "DELETE" });
+  window.localStorage.removeItem(ALPHA_CODE_STORAGE_KEY);
 }

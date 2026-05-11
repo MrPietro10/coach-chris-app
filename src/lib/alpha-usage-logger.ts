@@ -1,5 +1,4 @@
 import { ADMIN_ACCESS_STORAGE_KEY } from "@/lib/admin-access-constants";
-import { ALPHA_CODE_STORAGE_KEY } from "@/lib/alpha-code-store";
 
 type AlphaLogEntry = {
   user: string;
@@ -62,7 +61,7 @@ export function logEvent(eventName: string, metadata: Record<string, unknown> = 
   const user =
     window.localStorage.getItem(ADMIN_ACCESS_STORAGE_KEY) === "1"
       ? "admin-pietro"
-      : (window.localStorage.getItem(ALPHA_CODE_STORAGE_KEY) ?? "unknown");
+      : "alpha-user";
   const safeMetadata = sanitizeMetadata(metadata);
   const entry: AlphaLogEntry = {
     user,
