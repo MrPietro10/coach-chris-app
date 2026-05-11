@@ -1192,6 +1192,9 @@ export function ChrisAssistant() {
   const [resultsJobContext, setResultsJobContext] = useState<ResultsJobContext | null>(null);
   const pathname = usePathname();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const isSubmittingRef = useRef(false);
+  const pendingInputSubmitRef = useRef<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const getLiveInterviewJobs = useCallback((): InterviewJob[] => {
     const liveJobs = getAllStoredJobs(jobs);
@@ -2015,10 +2018,32 @@ export function ChrisAssistant() {
     ],
   );
 
+  const finishSubmitting = useCallback(() => {
+    isSubmittingRef.current = false;
+    pendingInputSubmitRef.current = null;
+    setIsSubmitting(false);
+  }, []);
+
+  const submitChatMessage = useCallback(
+    (text: string, promptId?: string) => {
+      const trimmed = text.trim();
+      if (!trimmed || isSubmittingRef.current) return;
+      if (pendingInputSubmitRef.current === trimmed) return;
+
+      isSubmittingRef.current = true;
+      pendingInputSubmitRef.current = trimmed;
+      setIsSubmitting(true);
+      setInputValue("");
+
+      void addExchange(trimmed, promptId).finally(() => {
+        finishSubmitting();
+      });
+    },
+    [addExchange, finishSubmitting],
+  );
+
   function handleSend() {
-    const text = inputValue.trim();
-    if (!text) return;
-    void addExchange(text);
+    submitChatMessage(inputValue);
   }
 
   useEffect(() => {
@@ -2070,7 +2095,7 @@ export function ChrisAssistant() {
   }, [isOpen]);
 
   const hasMessages = messages.length > 0;
-  const canSend = inputValue.trim().length > 0;
+  const canSend = !isSubmitting && inputValue.trim().length > 0;
 
   return (
     <>
@@ -2126,6 +2151,7 @@ export function ChrisAssistant() {
                     onClick={() => {
                       setMessages([]);
                       setInputValue("");
+                      finishSubmitting();
                       setInterviewTrack(null);
                       setInterviewPhase("idle");
                       setQuestionIndex(0);
@@ -2170,9 +2196,10 @@ export function ChrisAssistant() {
                   key={p.id}
                   type="button"
                   onClick={() => {
-                    void addExchange(p.label, p.id);
+                    submitChatMessage(p.label, p.id);
                   }}
-                  className="rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-[12px] leading-snug text-zinc-600 transition-colors hover:border-zinc-300 hover:bg-zinc-50"
+                  disabled={isSubmitting}
+                  className="rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-[12px] leading-snug text-zinc-600 transition-colors hover:border-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {p.label}
                 </button>
@@ -2225,17 +2252,28 @@ export function ChrisAssistant() {
               <input
                 type="text"
                 value={inputValue}
-                onChange={(e) => setInputValue(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleSend();
+                onChange={(e) => {
+                  const nextValue = e.target.value;
+                  setInputValue(nextValue);
+                  if (pendingInputSubmitRef.current && nextValue.trim() !== pendingInputSubmitRef.current) {
+                    pendingInputSubmitRef.current = null;
+                  }
                 }}
-                placeholder="Ask Chris..."
-                className="flex-1 rounded-xl border border-zinc-200 bg-zinc-50/80 px-3.5 py-2.5 text-[13px] text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-300 focus:bg-white focus:outline-none"
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter" || e.shiftKey) return;
+                  e.preventDefault();
+                  handleSend();
+                }}
+                placeholder={isSubmitting ? "Chris is thinking..." : "Ask Chris..."}
+                disabled={isSubmitting}
+                aria-busy={isSubmitting}
+                className="flex-1 rounded-xl border border-zinc-200 bg-zinc-50/80 px-3.5 py-2.5 text-[13px] text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-300 focus:bg-white focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
               />
               <button
                 type="button"
                 onClick={handleSend}
                 disabled={!canSend}
+                aria-busy={isSubmitting}
                 className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-zinc-900 text-white transition-colors hover:bg-zinc-800 disabled:opacity-30 disabled:hover:bg-zinc-900"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -2243,6 +2281,9 @@ export function ChrisAssistant() {
                 </svg>
               </button>
             </div>
+            {isSubmitting && (
+              <p className="mt-2 text-[11px] text-zinc-400">Chris is thinking...</p>
+            )}
           </div>
           </aside>
         </div>
