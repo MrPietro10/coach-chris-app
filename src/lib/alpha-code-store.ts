@@ -10,6 +10,11 @@ export const VALID_CODES = [
   "alpha-riko",
   "alpha-bb1",
   "alpha-mba1",
+  "alpha-raena",
+  "alpha-migiggly",
+  "alpha-josh",
+  "alpha-erina",
+  "alpha-ex",
 ] as const;
 
 export function isValidAlphaCode(value: string): boolean {
