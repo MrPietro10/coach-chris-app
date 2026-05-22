@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useIsClient } from "@/hooks/use-is-client";
+import { JobSpreadsheetImport } from "@/components/batch/job-spreadsheet-import";
+import { JobApplicationTracking } from "@/components/jobs/job-application-tracking";
 import { FitBadge } from "@/components/ui/fit-badge";
 import { PageHeader } from "@/components/ui/page-header";
 import { getReadyAnalysisForJob } from "@/lib/analysis-records";
@@ -15,13 +17,11 @@ import {
   setSelectedJobId,
   type ComputedJobAnalysesState,
 } from "@/lib/job-session-store";
+import { JOB_PIPELINE_UPDATED_EVENT } from "@/lib/job-pipeline-store";
 import {
   analyses,
   getStoredJobStatuses,
-  getStoredJobStatusTimestamps,
   jobs,
-  setStoredJobStatus,
-  type JobStatusTimestampMap,
 } from "@/mock-data/career-coach";
 import type { JobPosting, JobStatus, JobStatusMap } from "@/types/coach";
 
@@ -34,7 +34,6 @@ function readBatchPageState() {
     allJobs: getAllStoredJobs(jobs),
     computedAnalysesState: getComputedJobAnalysesState(),
     jobStatuses: getStoredJobStatuses(),
-    jobStatusTimestamps: getStoredJobStatusTimestamps(),
   };
 }
 
@@ -50,9 +49,6 @@ export default function BatchPage() {
   const [jobStatuses, setJobStatuses] = useState<JobStatusMap>(() =>
     typeof window === "undefined" ? {} : readBatchPageState().jobStatuses,
   );
-  const [jobStatusTimestamps, setJobStatusTimestamps] = useState<JobStatusTimestampMap>(() =>
-    typeof window === "undefined" ? {} : readBatchPageState().jobStatusTimestamps,
-  );
   const [editingJobId, setEditingJobId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editCompany, setEditCompany] = useState("");
@@ -66,15 +62,16 @@ export default function BatchPage() {
       setAllJobs(nextState.allJobs);
       setComputedAnalysesState(nextState.computedAnalysesState);
       setJobStatuses(nextState.jobStatuses);
-      setJobStatusTimestamps(nextState.jobStatusTimestamps);
     };
     window.addEventListener("storage", refresh);
     window.addEventListener("focus", refresh);
     window.addEventListener("career-coach:analysis-updated", refresh);
+    window.addEventListener(JOB_PIPELINE_UPDATED_EVENT, refresh);
     return () => {
       window.removeEventListener("storage", refresh);
       window.removeEventListener("focus", refresh);
       window.removeEventListener("career-coach:analysis-updated", refresh);
+      window.removeEventListener(JOB_PIPELINE_UPDATED_EVENT, refresh);
     };
   }, []);
 
@@ -84,7 +81,6 @@ export default function BatchPage() {
     setAllJobs(getAllStoredJobs(jobs));
     setComputedAnalysesState(getComputedJobAnalysesState());
     setJobStatuses(getStoredJobStatuses());
-    setJobStatusTimestamps(getStoredJobStatusTimestamps());
   }
 
   function openEditor(job: JobPosting) {
@@ -103,9 +99,15 @@ export default function BatchPage() {
     <>
       <PageHeader
         title="Saved jobs"
-        subtitle="Jobs you are comparing against your resume. Open fit results to review match, gaps, and next steps."
+        subtitle="Jobs you are comparing against your resume. Import a spreadsheet or add one job at a time."
       />
-      <section className="rounded-xl border border-zinc-200/80 bg-white p-5">
+      <JobSpreadsheetImport
+        onImported={() => {
+          refreshData();
+          notifySessionDataChanged();
+        }}
+      />
+      <section className="mt-5 rounded-xl border border-zinc-200/80 bg-white p-5">
         <h2 className="text-sm font-medium text-zinc-900">Saved jobs</h2>
         {allJobs.length === 0 ? (
           <div className="mt-3 rounded-lg border border-zinc-100 bg-zinc-50/60 px-4 py-4">
@@ -120,6 +122,13 @@ export default function BatchPage() {
                 className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-800"
               >
                 Add your first job
+              </button>
+              <button
+                type="button"
+                onClick={() => router.push("/compare")}
+                className="rounded-lg border border-zinc-200 px-4 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-50"
+              >
+                Compare jobs
               </button>
               <button
                 type="button"
@@ -138,19 +147,12 @@ export default function BatchPage() {
             const hasAnalysis = Boolean(analysis);
             const isUserAdded = !baseJobIds.has(job.id);
             const status: JobStatus | null = jobStatuses[job.id] ?? (hasAnalysis ? "Analyzed" : null);
-            const appliedAt = jobStatusTimestamps[job.id];
             return (
               <li key={job.id} className="py-2.5 first:pt-0 last:pb-0">
-                <div className="flex items-center justify-between">
-                  <div className="min-w-0">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium text-zinc-900">{job.title}</p>
                     <p className="text-xs text-zinc-500">{job.company} · {job.location || "No location"}</p>
-                    {status && (
-                      <p className="mt-0.5 text-[11px] text-zinc-500">
-                        Status: {status}
-                        {status === "Applied" && appliedAt ? ` · Applied ${new Date(appliedAt).toLocaleDateString()}` : ""}
-                      </p>
-                    )}
                     {computed?.analysisState === "insufficient_evidence" && (
                       <div className="mt-0.5 flex items-center gap-2 text-[11px] text-zinc-500">
                         <span>Insufficient evidence for fit score.</span>
@@ -171,7 +173,18 @@ export default function BatchPage() {
                       </div>
                     )}
                   </div>
-                  <div className="ml-4 flex shrink-0 items-center gap-2">
+                  <div className="flex shrink-0 flex-col items-stretch gap-2 sm:items-end">
+                    {hasAnalysis || status ? (
+                      <JobApplicationTracking
+                        key={job.id}
+                        jobId={job.id}
+                        currentStatus={status}
+                        hasAnalysis={hasAnalysis}
+                        variant="compact"
+                        onStatusChange={() => refreshData()}
+                      />
+                    ) : null}
+                    <div className="flex flex-wrap items-center justify-end gap-2">
                     {analysis && <FitBadge fit={analysis.fit} score={analysis.score} />}
                     <button
                       type="button"
@@ -193,19 +206,6 @@ export default function BatchPage() {
                           ? "See analysis"
                           : "Analyze fit"}
                     </button>
-                    {status !== "For Interview" && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setStoredJobStatus(job.id, "For Interview");
-                          refreshData();
-                          notifySessionDataChanged();
-                        }}
-                        className="rounded-md border border-zinc-200 px-2 py-1 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-50"
-                      >
-                        Mark for interview
-                      </button>
-                    )}
                     {isUserAdded && (
                       <>
                         <button
@@ -240,6 +240,7 @@ export default function BatchPage() {
                         </button>
                       </>
                     )}
+                    </div>
                   </div>
                 </div>
                 {isUserAdded && editingJobId === job.id && (

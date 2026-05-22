@@ -108,19 +108,53 @@ export function countMeaningfulCharacters(text: string): number {
 
 const MIN_MEANINGFUL_CHARACTERS = 24;
 
-const SECTION_HEADERS = [
-  { key: "skills" as const, patterns: [/^(core\s+)?skills?\b/i, /^technical\s+skills?\b/i, /^skills?\s*&\s*tools\b/i] },
-  {
-    key: "highlights" as const,
-    patterns: [
-      /^experience\b/i,
-      /^work\s+experience\b/i,
-      /^professional\s+experience\b/i,
-      /^employment\b/i,
-      /^projects?\b/i,
-    ],
-  },
+type ResumeSectionKey = "summary" | "skills" | "highlights";
+
+const SKILLS_SECTION_PATTERNS = [
+  /^(core\s+)?skills?\b/i,
+  /^technical\s+skills?\b/i,
+  /^key\s+skills?\b/i,
+  /^skills?\s*&\s*tools\b/i,
+  /^skills?\s+and\s+tools\b/i,
+  /^tools?\b/i,
+  /^tools?\s+and\s+technologies\b/i,
+  /^technologies\b/i,
+  /^technical\s+proficiencies\b/i,
+  /^competencies\b/i,
+  /^other\s+information\b/i,
 ];
+
+const EXPERIENCE_SECTION_PATTERNS = [
+  /^experience\b/i,
+  /^work\s+experience\b/i,
+  /^professional\s+experience\b/i,
+  /^employment\b/i,
+  /^career\s+history\b/i,
+  /^relevant\s+experience\b/i,
+  /^projects?\b/i,
+];
+
+const SUMMARY_SECTION_PATTERNS = [
+  /^summary\b/i,
+  /^professional\s+summary\b/i,
+  /^profile\b/i,
+  /^about\s+me\b/i,
+  /^objective\b/i,
+];
+
+const MAX_SECTION_HEADER_LENGTH = 80;
+
+function isLikelySectionHeader(line: string): boolean {
+  return line.length > 0 && line.length <= MAX_SECTION_HEADER_LENGTH;
+}
+
+function detectResumeSectionHeader(line: string): ResumeSectionKey | null {
+  if (!isLikelySectionHeader(line)) return null;
+  if (SKILLS_SECTION_PATTERNS.some((pattern) => pattern.test(line))) return "skills";
+  if (EXPERIENCE_SECTION_PATTERNS.some((pattern) => pattern.test(line))) return "highlights";
+  if (SUMMARY_SECTION_PATTERNS.some((pattern) => pattern.test(line))) return "summary";
+  return null;
+}
 
 function mapResumeTextToFields(rawText: string): ParsedResumeFields {
   const normalized = normalizeExtractedText(rawText);
@@ -129,12 +163,12 @@ function mapResumeTextToFields(rawText: string): ParsedResumeFields {
   }
 
   const lines = normalized.split("\n");
-  const sections: Record<"summary" | "skills" | "highlights", string[]> = {
+  const sections: Record<ResumeSectionKey, string[]> = {
     summary: [],
     skills: [],
     highlights: [],
   };
-  let current: keyof typeof sections = "summary";
+  let current: ResumeSectionKey = "summary";
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -143,15 +177,11 @@ function mapResumeTextToFields(rawText: string): ParsedResumeFields {
       continue;
     }
 
-    let matchedHeader = false;
-    for (const header of SECTION_HEADERS) {
-      if (header.patterns.some((pattern) => pattern.test(trimmed))) {
-        current = header.key;
-        matchedHeader = true;
-        break;
-      }
+    const sectionHeader = detectResumeSectionHeader(trimmed);
+    if (sectionHeader) {
+      current = sectionHeader;
+      continue;
     }
-    if (matchedHeader) continue;
 
     sections[current].push(trimmed);
   }

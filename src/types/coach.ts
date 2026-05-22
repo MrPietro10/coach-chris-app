@@ -61,7 +61,11 @@ export type ProfileData = {
 export type JobStatus =
   | "Analyzed"
   | "Applied"
-  | "For Interview";
+  | "For Interview"
+  | "Offer"
+  | "Rejected"
+  | "Withdrawn"
+  | "Archived";
 
 export type JobStatusMap = Record<string, JobStatus>;
 
@@ -74,6 +78,7 @@ export type JobPosting = {
   location: string;
   source: JobSource;
   salaryRange?: string;
+  jobUrl?: string;
   description: string;
   requiredSkills: string[];
 };

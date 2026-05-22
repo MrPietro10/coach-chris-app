@@ -1,6 +1,7 @@
 import * as cheerio from "cheerio";
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
+import { cleanupImportedJobDescription } from "@/lib/job-import-cleanup";
 
 export type JobHtmlExtractionResult = {
   description: string;
@@ -26,12 +27,14 @@ const JOB_CONTENT_SELECTORS = [
 const MIN_DESCRIPTION_CHARS = 200;
 
 function normalizeExtractedText(raw: string): string {
-  return raw
-    .replace(/\r\n/g, "\n")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t]{2,}/g, " ")
-    .trim();
+  return cleanupImportedJobDescription(
+    raw
+      .replace(/\r\n/g, "\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .replace(/[ \t]{2,}/g, " ")
+      .trim(),
+  );
 }
 
 function extractWithReadability(html: string, pageUrl: string): string {

@@ -3,8 +3,10 @@ import { importJobDescriptionFromUrl } from "@/lib/job-url-import-service";
 import {
   getUserFacingJobUrlImportError,
   JOB_URL_IMPORT_FAILURE_MESSAGE,
+  normalizeImportFailureCode,
   type JobUrlImportErrorCode,
 } from "@/lib/job-url-import-messages";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -20,6 +22,11 @@ function statusForCode(code: JobUrlImportErrorCode): number {
       return 400;
     case "payload_too_large":
       return 413;
+    case "linkedin_blocked":
+    case "unsupported_host":
+    case "indeed_search_page":
+    case "indeed_no_description":
+    case "page_protected":
     case "blocked":
     case "unsupported_page":
       return 422;
@@ -47,19 +54,27 @@ export async function POST(request: Request) {
     const result = await importJobDescriptionFromUrl(url);
 
     if (!result.ok) {
-      const copy = getUserFacingJobUrlImportError(result.code);
-      if (process.env.NODE_ENV !== "production") {
-        console.warn("[import-job-url] import_failed", { code: result.code });
-      }
+      const code = normalizeImportFailureCode(result.code, {
+        hostname: result.diagnostics?.urlHost,
+      });
+      const copy = getUserFacingJobUrlImportError(code);
+      const includeDiagnostics = process.env.NODE_ENV !== "production";
+
       return NextResponse.json(
         {
           error: copy.message,
           title: copy.title,
           hint: copy.hint ?? JOB_URL_IMPORT_FAILURE_MESSAGE,
-          code: result.code,
-          retryable: result.code === "fetch_failed" || result.code === "empty_extraction",
+          code,
+          retryable:
+            code === "fetch_failed" ||
+            code === "empty_extraction" ||
+            code === "indeed_no_description",
+          ...(includeDiagnostics && result.diagnostics
+            ? { diagnostics: result.diagnostics }
+            : {}),
         },
-        { status: statusForCode(result.code) },
+        { status: statusForCode(code) },
       );
     }
 

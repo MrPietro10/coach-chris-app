@@ -1,19 +1,24 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { ActiveResumeCallout } from "@/components/resume/active-resume-callout";
+import { ResumeParseReviewModal } from "@/components/resume/resume-parse-review-modal";
 import { ResumeParseStatus } from "@/components/resume/resume-parse-status";
+import { ALPHA_SESSION_CHANGED_EVENT } from "@/lib/alpha-session-store";
 import {
   clearStoredResumeUploadState,
   getResumeWorkspaceSnapshot,
-  getStoredResumeInput,
   getStoredResumeUploadState,
+  RESUME_STORAGE_CHANGED_EVENT,
   markResumeParsed,
   saveStoredResumeDraft,
   saveStoredResumeInput,
   saveStoredResumeUploadState,
   type StoredResumeInput,
+  type StoredResumeUploadState,
 } from "@/lib/job-session-store";
+import { readResumeUiSyncState } from "@/lib/resume-persistence-sync";
 import type { ResumeParseErrorCode } from "@/lib/resume-parse-messages";
 import {
   getUserFacingParseError,
@@ -83,26 +88,48 @@ function mapApiParseError(payload: {
   };
 }
 
-function deriveInitialFlowStatus(): ResumeParseFlowStatus {
-  const hints = getResumeWorkspaceHints(getResumeWorkspaceSnapshot(getStoredResumeInput()));
-  if (hints.isSavedForAnalysis && !hints.hasUnsavedEdits) return "resume_ready";
-  if (hints.needsParseReview) return "parse_success";
-  return "idle";
-}
-
 export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
   const router = useRouter();
-  const [resumeFields, setResumeFields] = useState<StoredResumeInput>(() => getStoredResumeInput());
+  const initialSync = readResumeUiSyncState();
+  const [resumeFields, setResumeFields] = useState<StoredResumeInput>(() => initialSync.fields);
   const [isSaving, setIsSaving] = useState(false);
   const [isDragActive, setIsDragActive] = useState(false);
-  const [flowStatus, setFlowStatus] = useState<ResumeParseFlowStatus>(deriveInitialFlowStatus);
+  const [flowStatus, setFlowStatus] = useState<ResumeParseFlowStatus>(() => initialSync.flowStatus);
   const [statusDetail, setStatusDetail] = useState<ParseStatusDetail>({
     title: null,
     message: null,
     hint: null,
   });
-  const [uploadedFile, setUploadedFile] = useState(() => getStoredResumeUploadState());
+  const [uploadedFile, setUploadedFile] = useState(() => initialSync.upload);
+  const [lastParsedFileType, setLastParsedFileType] = useState<"pdf" | "docx" | undefined>(
+    () => initialSync.parsedFileType,
+  );
+  const [parseReviewOpen, setParseReviewOpen] = useState(false);
+  const [pendingParseFields, setPendingParseFields] = useState<StoredResumeInput | null>(null);
+  const [pendingParsedAt, setPendingParsedAt] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    const handleExternalSync = () => {
+      const next = readResumeUiSyncState();
+      setResumeFields(next.fields);
+      setUploadedFile(next.upload);
+      setFlowStatus(next.flowStatus);
+      if (next.parsedFileType) {
+        setLastParsedFileType(next.parsedFileType);
+      }
+    };
+    window.addEventListener(RESUME_STORAGE_CHANGED_EVENT, handleExternalSync);
+    window.addEventListener("storage", handleExternalSync);
+    window.addEventListener("focus", handleExternalSync);
+    window.addEventListener(ALPHA_SESSION_CHANGED_EVENT, handleExternalSync);
+    return () => {
+      window.removeEventListener(RESUME_STORAGE_CHANGED_EVENT, handleExternalSync);
+      window.removeEventListener("storage", handleExternalSync);
+      window.removeEventListener("focus", handleExternalSync);
+      window.removeEventListener(ALPHA_SESSION_CHANGED_EVENT, handleExternalSync);
+    };
+  }, []);
 
   const snapshot = getResumeWorkspaceSnapshot(resumeFields);
   const hints = getResumeWorkspaceHints(snapshot);
@@ -162,9 +189,11 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
       return;
     }
 
-    const uploadState = {
+    const fileType: "pdf" | "docx" = file.name.toLowerCase().endsWith(".docx") ? "docx" : "pdf";
+    const uploadState: StoredResumeUploadState = {
       fileName: file.name,
       uploadedAt: new Date().toISOString(),
+      fileType,
     };
 
     setFlowStatus("uploading");
@@ -249,12 +278,17 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
         return;
       }
 
-      markResumeParsed(parsedFields);
-      setResumeFields(parsedFields);
+      const parsedFileType = payload.fileType === "docx" ? "docx" : "pdf";
+      setLastParsedFileType(parsedFileType);
+      setUploadedFile(getStoredResumeUploadState());
+      const parsedAtStamp = new Date().toISOString();
+      setPendingParsedAt(parsedAtStamp);
+      setPendingParseFields(parsedFields);
+      setParseReviewOpen(true);
       setFlowStatus("parse_success");
       setStatusDetail({
         title: null,
-        message: PARSE_SUCCESS_MESSAGE,
+        message: "Review the parsed resume before saving.",
         hint: payload.warning?.trim() || null,
       });
     } catch (error) {
@@ -286,6 +320,8 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
         Upload a {PARSEABLE_RESUME_LABEL} or paste below. Save when you are ready — that version is used for
         every job analysis.
       </p>
+
+      <ActiveResumeCallout snapshot={snapshot} inAnalysisContext={hints.isSavedForAnalysis} />
 
       <ResumeParseStatus
         status={displayStatus}
@@ -409,13 +445,13 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
         </div>
         <div>
           <label htmlFor="resume-highlights" className="block text-sm font-medium text-zinc-900">
-            Experience highlights
+            Experience
           </label>
           <textarea
             id="resume-highlights"
             value={resumeFields.highlights}
             onChange={(event) => updateField("highlights", event.target.value)}
-            placeholder="One bullet per line"
+            placeholder="One role or bullet per line"
             className="mt-1.5 min-h-28 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm text-zinc-700"
           />
         </div>
@@ -457,6 +493,39 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
           Continue to add a job
         </button>
       </div>
+
+      <ResumeParseReviewModal
+        open={parseReviewOpen}
+        draft={pendingParseFields}
+        parsedAt={pendingParsedAt}
+        fileType={lastParsedFileType}
+        fileName={uploadedFile?.fileName ?? null}
+        onConfirm={(confirmed) => {
+          const parsedFileType = lastParsedFileType ?? "pdf";
+          markResumeParsed(confirmed, {
+            fileType: parsedFileType,
+            parsedAt: pendingParsedAt ?? undefined,
+          });
+          setResumeFields(confirmed);
+          setPendingParseFields(null);
+          setPendingParsedAt(null);
+          setParseReviewOpen(false);
+          setFlowStatus("parse_success");
+          setStatusDetail({
+            title: null,
+            message: PARSE_SUCCESS_MESSAGE,
+            hint: null,
+          });
+        }}
+        onDismiss={() => {
+          setParseReviewOpen(false);
+          setPendingParseFields(null);
+          setPendingParsedAt(null);
+          setFlowStatus(hints.isSavedForAnalysis ? "resume_ready" : "idle");
+          clearStatusDetail();
+          setNotice("Import cancelled. Paste or upload again when ready.");
+        }}
+      />
     </section>
   );
 }

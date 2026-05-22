@@ -12,7 +12,10 @@ export type AlphaScopedStorageResource =
   | "pending-analysis-job"
   | "job-statuses"
   | "job-status-timestamps"
+  | "job-application-notes"
   | "usage-logs"
+  | "resume-parse-feedback"
+  | "job-import-feedback"
   | "chris-chat";
 
 function isBrowser(): boolean {

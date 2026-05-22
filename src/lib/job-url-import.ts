@@ -2,7 +2,18 @@ import {
   extractJobDescriptionFromHtml,
   type JobHtmlExtractionResult,
 } from "@/lib/job-url-import-extractors";
+import {
+  buildJobUrlImportDiagnostics,
+  logJobUrlImportFailureDiagnostics,
+  type JobUrlImportDiagnostics,
+} from "@/lib/job-url-import-diagnostics";
 import type { JobUrlImportErrorCode } from "@/lib/job-url-import-messages";
+import {
+  classifyJobUrlPage,
+  isIndeedHost,
+  isLinkedInHost,
+  looksLikeSearchResultsPage,
+} from "@/lib/job-url-import-url-classifier";
 
 export const MAX_JOB_PAGE_BYTES = 1_500_000;
 export const JOB_URL_FETCH_TIMEOUT_MS = 15_000;
@@ -40,17 +51,20 @@ export type JobUrlFetchResult = {
   html: string;
   finalUrl: string;
   contentType: string | null;
+  httpStatus: number;
 };
 
 export type JobUrlImportDiagnosticEvent =
   | "validation_failed"
   | "fetch_started"
   | "fetch_failed"
+  | "fetch_completed"
   | "blocked_detected"
   | "extract_started"
   | "extract_empty"
   | "extract_success"
-  | "provider_skipped";
+  | "provider_skipped"
+  | "url_classified";
 
 export function logJobUrlImportDiagnostic(
   event: JobUrlImportDiagnosticEvent,
@@ -60,6 +74,10 @@ export function logJobUrlImportDiagnostic(
     return;
   }
   console.info(`[job-url-import] ${event}`, details);
+}
+
+function logFailureWithDiagnostics(diagnostics: JobUrlImportDiagnostics): void {
+  logJobUrlImportFailureDiagnostics(diagnostics);
 }
 
 export function validatePublicJobUrl(rawUrl: string): ValidatedJobUrl | JobUrlImportErrorCode {
@@ -88,11 +106,44 @@ export function validatePublicJobUrl(rawUrl: string): ValidatedJobUrl | JobUrlIm
     return "private_host";
   }
 
+  if (isLinkedInHost(hostname)) {
+    logFailureWithDiagnostics(
+      buildJobUrlImportDiagnostics({
+        urlHost: hostname,
+        urlPath: parsed.pathname,
+        failureReason: "linkedin_host_blocked",
+        urlPageKind: classifyJobUrlPage(hostname, parsed.toString()),
+        looksLikeSearchResults: looksLikeSearchResultsPage(hostname, parsed.toString()),
+        errorCode: "linkedin_blocked",
+      }),
+    );
+    return "linkedin_blocked";
+  }
+
+  if (isIndeedHost(hostname) && looksLikeSearchResultsPage(hostname, parsed.toString())) {
+    logFailureWithDiagnostics(
+      buildJobUrlImportDiagnostics({
+        urlHost: hostname,
+        urlPath: parsed.pathname,
+        failureReason: "indeed_search_or_listing_url",
+        urlPageKind: classifyJobUrlPage(hostname, parsed.toString()),
+        looksLikeSearchResults: true,
+        errorCode: "indeed_search_page",
+      }),
+    );
+    return "indeed_search_page";
+  }
+
+  if (isDirectImportBlockedHost(hostname)) {
+    return "unsupported_host";
+  }
+
   return { href: parsed.toString(), hostname };
 }
 
-function isLinkedInHost(hostname: string): boolean {
-  return hostname === "linkedin.com" || hostname.endsWith(".linkedin.com");
+/** Hosts that require an approved connector (Firecrawl, Apify, etc.) — never fetched in V1. */
+export function isDirectImportBlockedHost(hostname: string): boolean {
+  return isLinkedInHost(hostname);
 }
 
 export function detectBlockedOrPrivatePage(input: {
@@ -102,24 +153,13 @@ export function detectBlockedOrPrivatePage(input: {
   extractedLength: number;
 }): JobUrlImportErrorCode | null {
   if (input.status === 401 || input.status === 403 || input.status === 407) {
-    return "blocked";
+    return "page_protected";
   }
 
   const htmlSample = input.html.slice(0, 120_000).toLowerCase();
   const matchedPattern = BLOCKED_CONTENT_PATTERNS.find((pattern) => pattern.test(htmlSample));
   if (matchedPattern) {
-    return "blocked";
-  }
-
-  if (isLinkedInHost(input.hostname)) {
-    const looksLikeLogin =
-      htmlSample.includes("authwall") ||
-      htmlSample.includes("join linkedin") ||
-      htmlSample.includes("sign in") ||
-      input.extractedLength < MIN_JOB_DESCRIPTION_CHARS;
-    if (looksLikeLogin) {
-      return "unsupported_page";
-    }
+    return "page_protected";
   }
 
   if (input.extractedLength < MIN_JOB_DESCRIPTION_CHARS) {
@@ -127,7 +167,7 @@ export function detectBlockedOrPrivatePage(input: {
       htmlSample.includes("login") &&
       (htmlSample.includes("password") || htmlSample.includes("sign in"));
     if (hasLoginShell) {
-      return "unsupported_page";
+      return "page_protected";
     }
   }
 
@@ -138,7 +178,7 @@ export const MIN_JOB_DESCRIPTION_CHARS = 200;
 
 export async function fetchPublicJobPageHtml(url: string): Promise<
   | JobUrlFetchResult
-  | { code: JobUrlImportErrorCode; status?: number }
+  | { code: JobUrlImportErrorCode; status?: number; contentType?: string | null }
 > {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), JOB_URL_FETCH_TIMEOUT_MS);
@@ -155,15 +195,35 @@ export async function fetchPublicJobPageHtml(url: string): Promise<
     });
 
     const contentType = response.headers.get("content-type");
+    const urlHost = safeHostFromUrl(url);
     if (contentType && !contentType.toLowerCase().includes("text/html")) {
-      return { code: "unsupported_page", status: response.status };
+      logFailureWithDiagnostics(
+        buildJobUrlImportDiagnostics({
+          urlHost: urlHost ?? "unknown",
+          httpStatus: response.status,
+          contentType,
+          failureReason: "non_html_content_type",
+          errorCode: "page_protected",
+        }),
+      );
+      return { code: "page_protected", status: response.status, contentType };
     }
 
     if (!response.ok) {
-      if (response.status === 401 || response.status === 403 || response.status === 407) {
-        return { code: "blocked", status: response.status };
-      }
-      return { code: "fetch_failed", status: response.status };
+      const code =
+        response.status === 401 || response.status === 403 || response.status === 407
+          ? "page_protected"
+          : "fetch_failed";
+      logFailureWithDiagnostics(
+        buildJobUrlImportDiagnostics({
+          urlHost: urlHost ?? "unknown",
+          httpStatus: response.status,
+          contentType,
+          failureReason: code === "page_protected" ? "http_auth_or_forbidden" : "http_error",
+          errorCode: code,
+        }),
+      );
+      return { code, status: response.status, contentType };
     }
 
     const contentLength = Number(response.headers.get("content-length") ?? "0");
@@ -195,14 +255,31 @@ export async function fetchPublicJobPageHtml(url: string): Promise<
       concatenateUint8Arrays(chunks),
     );
 
+    logJobUrlImportDiagnostic("fetch_completed", {
+      urlHost: urlHost ?? "unknown",
+      httpStatus: response.status,
+      contentType,
+      fetchedHtmlLength: html.length,
+      finalUrl: response.url || url,
+    });
+
     return {
       html,
       finalUrl: response.url || url,
       contentType,
+      httpStatus: response.status,
     };
   } catch (error) {
+    const urlHost = safeHostFromUrl(url);
+    logFailureWithDiagnostics(
+      buildJobUrlImportDiagnostics({
+        urlHost: urlHost ?? "unknown",
+        failureReason: "fetch_exception",
+        errorCode: "fetch_failed",
+      }),
+    );
     logJobUrlImportDiagnostic("fetch_failed", {
-      urlHost: safeHostFromUrl(url),
+      urlHost,
       error: error instanceof Error ? error.name : "unknown",
     });
     return { code: "fetch_failed" };
@@ -254,21 +331,58 @@ export function extractFromFetchedHtml(
     extractedLength: extracted.description.length,
   });
 
+  const pageKind = classifyJobUrlPage(hostname, pageUrl);
+  const searchLike = looksLikeSearchResultsPage(hostname, pageUrl);
+
   if (blocked) {
-    logJobUrlImportDiagnostic("blocked_detected", {
-      urlHost: hostname,
-      code: blocked,
-      extractedLength: extracted.description.length,
-    });
-    return { ok: false, code: blocked };
+    const failureCode =
+      isIndeedHost(hostname) && searchLike ? "indeed_search_page" : blocked;
+    logFailureWithDiagnostics(
+      buildJobUrlImportDiagnostics({
+        urlHost: hostname,
+        httpStatus,
+        fetchedHtmlLength: html.length,
+        extractedTextLength: extracted.description.length,
+        failureReason: "blocked_or_protected_content",
+        urlPageKind: pageKind,
+        looksLikeSearchResults: searchLike,
+        errorCode: failureCode,
+      }),
+    );
+    return { ok: false, code: failureCode };
+  }
+
+  if (isIndeedHost(hostname) && searchLike) {
+    logFailureWithDiagnostics(
+      buildJobUrlImportDiagnostics({
+        urlHost: hostname,
+        httpStatus,
+        fetchedHtmlLength: html.length,
+        extractedTextLength: extracted.description.length,
+        failureReason: "indeed_search_results_after_fetch",
+        urlPageKind: pageKind,
+        looksLikeSearchResults: true,
+        errorCode: "indeed_search_page",
+      }),
+    );
+    return { ok: false, code: "indeed_search_page" };
   }
 
   if (extracted.description.length < MIN_JOB_DESCRIPTION_CHARS) {
-    logJobUrlImportDiagnostic("extract_empty", {
-      urlHost: hostname,
-      extractedLength: extracted.description.length,
-    });
-    return { ok: false, code: "empty_extraction" };
+    const failureCode = isIndeedHost(hostname) ? "indeed_no_description" : "empty_extraction";
+    logFailureWithDiagnostics(
+      buildJobUrlImportDiagnostics({
+        urlHost: hostname,
+        httpStatus,
+        fetchedHtmlLength: html.length,
+        extractedTextLength: extracted.description.length,
+        failureReason: "insufficient_extracted_text",
+        urlPageKind: pageKind,
+        looksLikeSearchResults: searchLike,
+        errorCode: failureCode,
+      }),
+    );
+    return { ok: false, code: failureCode };
   }
 
   logJobUrlImportDiagnostic("extract_success", {

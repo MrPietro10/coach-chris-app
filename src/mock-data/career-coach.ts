@@ -1,13 +1,8 @@
-import {
-  readAlphaScopedStorageItem,
-  writeAlphaScopedStorageItem,
-} from "@/lib/alpha-scoped-storage";
 import type {
   ChatMessage,
   CoachChatContext,
   JobAnalysis,
   JobPosting,
-  JobStatus,
   JobStatusMap,
   OptimizeDocument,
   OptimizeJobData,
@@ -62,83 +57,18 @@ export const currentResume: ResumeData = ENABLE_MOCK_DATA ? currentResumeSeed : 
 export const jobs: JobPosting[] = ENABLE_MOCK_DATA ? [] : [];
 export const jobStatuses: JobStatusMap = ENABLE_MOCK_DATA ? {} : {};
 
-const ALL_JOB_STATUSES: JobStatus[] = [
-  "Analyzed",
-  "Applied",
-  "For Interview",
-];
-
-export function getStoredJobStatuses(): JobStatusMap {
-  if (typeof window === "undefined") {
-    return jobStatuses;
-  }
-
-  const raw = readAlphaScopedStorageItem("job-statuses");
-  if (!raw) {
-    return jobStatuses;
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Record<string, string>;
-    const sanitized: JobStatusMap = { ...jobStatuses };
-    for (const [jobId, status] of Object.entries(parsed)) {
-      if (ALL_JOB_STATUSES.includes(status as JobStatus)) {
-        sanitized[jobId] = status as JobStatus;
-      }
-    }
-    return sanitized;
-  } catch {
-    return jobStatuses;
-  }
-}
-
-export function saveJobStatuses(statuses: JobStatusMap): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  writeAlphaScopedStorageItem("job-statuses", JSON.stringify(statuses));
-}
-
-export type JobStatusTimestampMap = Record<string, string>;
-
-export function getStoredJobStatusTimestamps(): JobStatusTimestampMap {
-  if (typeof window === "undefined") {
-    return {};
-  }
-  const raw = readAlphaScopedStorageItem("job-status-timestamps");
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const out: JobStatusTimestampMap = {};
-    for (const [jobId, value] of Object.entries(parsed)) {
-      if (typeof value === "string" && value.length > 0) {
-        out[jobId] = value;
-      }
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-export function saveJobStatusTimestamps(statuses: JobStatusTimestampMap): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  writeAlphaScopedStorageItem("job-status-timestamps", JSON.stringify(statuses));
-}
-
-export function setStoredJobStatus(jobId: string, status: JobStatus): void {
-  const statuses = getStoredJobStatuses();
-  statuses[jobId] = status;
-  saveJobStatuses(statuses);
-
-  if (status === "Applied") {
-    const timestamps = getStoredJobStatusTimestamps();
-    timestamps[jobId] = new Date().toISOString();
-    saveJobStatusTimestamps(timestamps);
-  }
-}
+export {
+  getStoredJobStatuses,
+  saveJobStatuses,
+  getStoredJobStatusTimestamps,
+  saveJobStatusTimestamps,
+  setStoredJobStatus,
+  getJobApplicationNotes,
+  getJobApplicationNote,
+  setJobApplicationNote,
+  type JobStatusTimestampMap,
+  type JobApplicationNotesMap,
+} from "@/lib/job-pipeline-store";
 
 export const analyses: JobAnalysis[] = ENABLE_MOCK_DATA ? [] : [];
 

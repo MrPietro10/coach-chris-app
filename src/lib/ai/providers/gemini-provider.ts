@@ -276,7 +276,7 @@ export class GeminiProvider implements AIProvider {
       missingEvidence.push("Resume skills are missing.");
     }
     if (input.resumeContext.experienceHighlights.length === 0) {
-      missingEvidence.push("Resume experience highlights are missing.");
+      missingEvidence.push("Resume experience section is missing.");
     }
     if (input.selectedJob.requiredSkills.length === 0) {
       missingEvidence.push("Selected job required skills are missing.");

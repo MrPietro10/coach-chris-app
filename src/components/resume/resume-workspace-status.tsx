@@ -28,18 +28,22 @@ export function ResumeWorkspaceStatus({
 
   return (
     <div className="text-xs text-zinc-600">
+      {hints.isActiveForAnalysis ? (
+        <p className="font-medium text-emerald-800">
+          This is the active resume being analyzed for this job.
+        </p>
+      ) : hints.isSavedForAnalysis && !hints.hasUnsavedEdits ? (
+        <p className="font-medium text-emerald-800">
+          This is the active resume used when you run job analysis.
+        </p>
+      ) : null}
       {hints.previewText ? (
-        <p>
-          <span className="font-medium text-zinc-800">Resume for analysis:</span> {hints.previewText}
+        <p className={hints.isActiveForAnalysis || hints.isSavedForAnalysis ? "mt-1" : ""}>
+          <span className="font-medium text-zinc-800">Active resume:</span> {hints.previewText}
         </p>
       ) : null}
       {snapshot.upload?.fileName ? (
-        <p className="mt-1 text-zinc-500">From file: {snapshot.upload.fileName}</p>
-      ) : null}
-      {hints.isActiveForAnalysis ? (
-        <p className="mt-1 text-emerald-800">This saved resume is used for the current job analysis.</p>
-      ) : hints.isSavedForAnalysis && !hints.hasUnsavedEdits ? (
-        <p className="mt-1 text-emerald-800">Saved — used when you run job analysis.</p>
+        <p className="mt-1 text-zinc-500">Source file: {snapshot.upload.fileName}</p>
       ) : null}
       {hints.needsParseReview ? (
         <p className="mt-1 text-amber-800">

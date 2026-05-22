@@ -73,6 +73,9 @@ function sanitizeJob(job: Partial<JobPosting>): JobPosting | null {
       ? job.description.trim()
       : "(description not provided)";
 
+  const normalizedJobUrl =
+    typeof job.jobUrl === "string" && job.jobUrl.trim().length > 0 ? job.jobUrl.trim() : undefined;
+
   return {
     id: job.id.trim(),
     title: normalizedTitle,
@@ -80,6 +83,7 @@ function sanitizeJob(job: Partial<JobPosting>): JobPosting | null {
     location: job.location ?? "",
     source: normalizedSource,
     salaryRange: job.salaryRange,
+    jobUrl: normalizedJobUrl,
     description: normalizedDescription,
     requiredSkills: Array.isArray(job.requiredSkills)
       ? job.requiredSkills.filter((skill): skill is string => typeof skill === "string")
@@ -101,6 +105,49 @@ export function saveUserJob(job: JobPosting): void {
   const existing = getStoredUserJobs();
   if (existing.some((item) => item.id === job.id)) return;
   writeScopedJson("jobs", [job, ...existing]);
+}
+
+export type SpreadsheetJobImportInput = {
+  title: string;
+  company: string;
+  location: string;
+  jobUrl?: string;
+  description: string;
+};
+
+export function jobPostingFromSpreadsheetRow(
+  row: SpreadsheetJobImportInput,
+  id = buildSessionJobId("job_import"),
+): JobPosting | null {
+  return sanitizeJob({
+    id,
+    title: row.title,
+    company: row.company,
+    location: row.location,
+    jobUrl: row.jobUrl,
+    description: row.description,
+    source: "manual_upload",
+    requiredSkills: [],
+  });
+}
+
+/** Merge spreadsheet rows into alpha-scoped jobs storage (skips invalid rows). */
+export function saveImportedUserJobs(rows: SpreadsheetJobImportInput[]): JobPosting[] {
+  if (!isBrowser()) return [];
+  const existing = getStoredUserJobs();
+  const existingIds = new Set(existing.map((job) => job.id));
+  const imported: JobPosting[] = [];
+
+  for (const row of rows) {
+    const job = jobPostingFromSpreadsheetRow(row);
+    if (!job || existingIds.has(job.id)) continue;
+    imported.push(job);
+    existingIds.add(job.id);
+  }
+
+  if (imported.length === 0) return [];
+  writeScopedJson("jobs", [...imported, ...existing]);
+  return imported;
 }
 
 export function getAllStoredJobs(baseJobs: JobPosting[]): JobPosting[] {
@@ -321,7 +368,19 @@ export type StoredResumeInput = {
 export type StoredResumeUploadState = {
   fileName: string;
   uploadedAt: string;
+  fileType?: "pdf" | "docx";
 };
+
+export type ResumePersistenceState = {
+  input: StoredResumeInput;
+  upload: StoredResumeUploadState | null;
+  savedAt: string | null;
+  parsedAt: string | null;
+  isSavedForAnalysis: boolean;
+  needsParseReview: boolean;
+};
+
+export const RESUME_STORAGE_CHANGED_EVENT = "career-coach:resume-storage-changed";
 
 const EMPTY_RESUME_INPUT: StoredResumeInput = {
   summary: "",
@@ -344,12 +403,14 @@ export function getStoredResumeInput(): StoredResumeInput {
 
 export function getStoredResumeUploadState(): StoredResumeUploadState | null {
   if (!isBrowser()) return EMPTY_RESUME_UPLOAD_STATE;
-  const parsed = readScopedJson<Record<string, unknown>>("resume");
-  if (!parsed || typeof parsed !== "object") return EMPTY_RESUME_UPLOAD_STATE;
+  const parsed = readResumeRecordRaw();
+  if (!parsed) return EMPTY_RESUME_UPLOAD_STATE;
   const fileName = typeof parsed.uploadFileName === "string" ? parsed.uploadFileName.trim() : "";
   const uploadedAt = typeof parsed.uploadedAt === "string" ? parsed.uploadedAt.trim() : "";
   if (!fileName || !uploadedAt) return EMPTY_RESUME_UPLOAD_STATE;
-  return { fileName, uploadedAt };
+  const fileTypeRaw = typeof parsed.uploadFileType === "string" ? parsed.uploadFileType : "";
+  const fileType = fileTypeRaw === "pdf" || fileTypeRaw === "docx" ? fileTypeRaw : undefined;
+  return { fileName, uploadedAt, fileType };
 }
 
 export function getResumeSavedAt(): string | null {
@@ -391,6 +452,33 @@ export function getResumeWorkspaceSnapshot(draft?: StoredResumeInput): {
 
 type ResumeWritePreserve = "preserve";
 
+function dispatchResumeStorageChanged(): void {
+  if (!isBrowser()) return;
+  window.dispatchEvent(new Event(RESUME_STORAGE_CHANGED_EVENT));
+}
+
+function readResumeRecordRaw(): Record<string, unknown> | null {
+  const parsed = readScopedJson<Record<string, unknown>>("resume");
+  return parsed && typeof parsed === "object" ? parsed : null;
+}
+
+export function getResumePersistenceState(): ResumePersistenceState {
+  const input = getStoredResumeInput();
+  const upload = getStoredResumeUploadState();
+  const savedAt = getResumeSavedAt();
+  const parsedAt = getResumeParsedAt();
+  const hasContent = hasStoredResumeInput();
+
+  return {
+    input,
+    upload,
+    savedAt,
+    parsedAt,
+    isSavedForAnalysis: Boolean(savedAt) && hasContent,
+    needsParseReview: Boolean(parsedAt) && !savedAt && hasContent,
+  };
+}
+
 function writeResumeRecord(
   input: StoredResumeInput,
   options?: {
@@ -399,6 +487,7 @@ function writeResumeRecord(
     upload?: StoredResumeUploadState | null | ResumeWritePreserve;
   },
 ): void {
+  const existingRaw = readResumeRecordRaw();
   const existingUpload = getStoredResumeUploadState();
   const uploadState =
     options?.upload === undefined || options.upload === "preserve"
@@ -414,6 +503,8 @@ function writeResumeRecord(
     options?.parsedAt === undefined || options.parsedAt === "preserve"
       ? (existingParsedAt ?? "")
       : (options.parsedAt ?? "");
+  const existingFileType =
+    typeof existingRaw?.uploadFileType === "string" ? existingRaw.uploadFileType : "";
 
   writeScopedJson("resume", {
     summary: input.summary.trim(),
@@ -421,9 +512,11 @@ function writeResumeRecord(
     highlights: input.highlights.trim(),
     uploadFileName: uploadState?.fileName ?? "",
     uploadedAt: uploadState?.uploadedAt ?? "",
+    uploadFileType: uploadState?.fileType ?? existingFileType,
     savedAt: nextSavedAt,
     parsedAt: nextParsedAt,
   });
+  dispatchResumeStorageChanged();
 }
 
 /** Persist parsed or edited content without confirming for analysis yet. */
@@ -434,12 +527,28 @@ export function saveStoredResumeDraft(input: StoredResumeInput): void {
 
 export function saveStoredResumeInput(input: StoredResumeInput): void {
   if (!isBrowser()) return;
-  writeResumeRecord(input, { savedAt: new Date().toISOString(), parsedAt: null });
+  writeResumeRecord(input, {
+    savedAt: new Date().toISOString(),
+    parsedAt: "preserve",
+    upload: "preserve",
+  });
 }
 
-export function markResumeParsed(input: StoredResumeInput): void {
+export function markResumeParsed(
+  input: StoredResumeInput,
+  options?: { fileType?: "pdf" | "docx"; parsedAt?: string },
+): void {
   if (!isBrowser()) return;
-  writeResumeRecord(input, { savedAt: null, parsedAt: new Date().toISOString() });
+  const existingUpload = getStoredResumeUploadState();
+  const upload =
+    existingUpload && options?.fileType
+      ? { ...existingUpload, fileType: options.fileType }
+      : existingUpload;
+  writeResumeRecord(input, {
+    savedAt: null,
+    parsedAt: options?.parsedAt ?? new Date().toISOString(),
+    upload: upload ?? "preserve",
+  });
 }
 
 export function saveStoredResumeUploadState(state: StoredResumeUploadState): void {
@@ -448,6 +557,7 @@ export function saveStoredResumeUploadState(state: StoredResumeUploadState): voi
     upload: {
       fileName: state.fileName.trim(),
       uploadedAt: state.uploadedAt.trim(),
+      fileType: state.fileType,
     },
     savedAt: "preserve",
     parsedAt: "preserve",
