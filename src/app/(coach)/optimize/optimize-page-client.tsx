@@ -769,12 +769,6 @@ function OptimizeWorkspace({ availableJobIds }: { availableJobIds: string[] }) {
           <div className="flex shrink-0 gap-2 pt-5">
             <button
               type="button"
-              className="rounded-lg border border-zinc-200 px-3 py-1.5 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-50"
-            >
-              Re-optimize
-            </button>
-            <button
-              type="button"
               onClick={() => downloadResumeAsText(liveDoc)}
               className="rounded-lg bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-zinc-800"
             >

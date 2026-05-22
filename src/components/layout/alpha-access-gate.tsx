@@ -5,9 +5,10 @@ import { useRouter } from "next/navigation";
 import { useIsClient } from "@/hooks/use-is-client";
 import { clearPersistedAlphaCode } from "@/lib/alpha-code-store";
 import {
-  clearActiveAlphaStorageNamespace,
+  getActiveAlphaStorageNamespace,
   setActiveAlphaStorageNamespace,
 } from "@/lib/alpha-session-store";
+import { COACH_CHRIS_AUDIENCE, COACH_CHRIS_TAGLINE } from "@/lib/coach-chris-onboarding";
 
 export function AlphaAccessGate({
   children,
@@ -28,8 +29,9 @@ export function AlphaAccessGate({
 
   useEffect(() => {
     clearPersistedAlphaCode();
-    if (!adminSessionActive) {
-      clearActiveAlphaStorageNamespace();
+    if (adminSessionActive) return;
+    if (getActiveAlphaStorageNamespace()) {
+      setAlphaUnlocked(true);
     }
   }, [adminSessionActive]);
 
@@ -75,9 +77,11 @@ export function AlphaAccessGate({
   return (
     <div className="flex min-h-screen items-center justify-center bg-zinc-50 px-5">
       <section className="w-full max-w-sm rounded-xl border border-zinc-200 bg-white p-5 shadow-sm">
-        <h1 className="text-base font-semibold text-zinc-900">Alpha Access</h1>
-        <p className="mt-1 text-sm text-zinc-600">
-          Enter your alpha access code to continue.
+        <h1 className="text-base font-semibold text-zinc-900">Coach Chris Alpha</h1>
+        <p className="mt-2 text-sm text-zinc-700">{COACH_CHRIS_TAGLINE}</p>
+        <p className="mt-1 text-xs text-zinc-500">{COACH_CHRIS_AUDIENCE}</p>
+        <p className="mt-3 text-sm text-zinc-600">
+          Enter your alpha access code to start with your resume.
         </p>
         <form
           className="mt-4"

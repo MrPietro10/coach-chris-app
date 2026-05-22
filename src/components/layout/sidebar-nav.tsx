@@ -3,16 +3,24 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
+import { CoachChrisIntro } from "@/components/onboarding/coach-chris-intro";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/profile", label: "Profile" },
   { href: "/resume", label: "Resume" },
-  { href: "/analyze", label: "Analyze" },
-  { href: "/batch", label: "Jobs" },
-  { href: "/results", label: "Results" },
+  { href: "/analyze", label: "Add job" },
+  { href: "/batch", label: "Saved jobs" },
+  { href: "/results", label: "Fit results" },
   { href: "/optimize", label: "Optimize" },
 ];
+
+function getActiveOnboardingStep(pathname: string): 1 | 2 | 3 | undefined {
+  if (pathname.startsWith("/resume")) return 1;
+  if (pathname.startsWith("/analyze")) return 2;
+  if (pathname.startsWith("/results")) return 3;
+  return undefined;
+}
 
 function NavLinks({
   onNavigate,
@@ -77,8 +85,12 @@ export function SidebarNav({
   showProfileLink?: boolean;
   showOptimizeLink?: boolean;
 }) {
+  const pathname = usePathname();
+  const activeStep = getActiveOnboardingStep(pathname);
+
   return (
     <aside className="hidden w-44 shrink-0 lg:sticky lg:top-20 lg:block">
+      <CoachChrisIntro variant="sidebar" activeStep={activeStep} />
       <NavLinks
         showAdminLink={showAdminLink}
         showProfileLink={showProfileLink}

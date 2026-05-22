@@ -318,11 +318,18 @@ export type StoredResumeInput = {
   highlights: string;
 };
 
+export type StoredResumeUploadState = {
+  fileName: string;
+  uploadedAt: string;
+};
+
 const EMPTY_RESUME_INPUT: StoredResumeInput = {
   summary: "",
   skills: "",
   highlights: "",
 };
+
+const EMPTY_RESUME_UPLOAD_STATE: StoredResumeUploadState | null = null;
 
 export function getStoredResumeInput(): StoredResumeInput {
   if (!isBrowser()) return { ...EMPTY_RESUME_INPUT };
@@ -335,12 +342,124 @@ export function getStoredResumeInput(): StoredResumeInput {
   };
 }
 
-export function saveStoredResumeInput(input: StoredResumeInput): void {
-  if (!isBrowser()) return;
+export function getStoredResumeUploadState(): StoredResumeUploadState | null {
+  if (!isBrowser()) return EMPTY_RESUME_UPLOAD_STATE;
+  const parsed = readScopedJson<Record<string, unknown>>("resume");
+  if (!parsed || typeof parsed !== "object") return EMPTY_RESUME_UPLOAD_STATE;
+  const fileName = typeof parsed.uploadFileName === "string" ? parsed.uploadFileName.trim() : "";
+  const uploadedAt = typeof parsed.uploadedAt === "string" ? parsed.uploadedAt.trim() : "";
+  if (!fileName || !uploadedAt) return EMPTY_RESUME_UPLOAD_STATE;
+  return { fileName, uploadedAt };
+}
+
+export function getResumeSavedAt(): string | null {
+  if (!isBrowser()) return null;
+  const parsed = readScopedJson<Record<string, unknown>>("resume");
+  if (!parsed || typeof parsed !== "object") return null;
+  const savedAt = typeof parsed.savedAt === "string" ? parsed.savedAt.trim() : "";
+  return savedAt || null;
+}
+
+export function getResumeParsedAt(): string | null {
+  if (!isBrowser()) return null;
+  const parsed = readScopedJson<Record<string, unknown>>("resume");
+  if (!parsed || typeof parsed !== "object") return null;
+  const parsedAt = typeof parsed.parsedAt === "string" ? parsed.parsedAt.trim() : "";
+  return parsedAt || null;
+}
+
+export function isResumeReadyForAnalysis(): boolean {
+  return hasStoredResumeInput() && Boolean(getResumeSavedAt());
+}
+
+export function getResumeWorkspaceSnapshot(draft?: StoredResumeInput): {
+  stored: StoredResumeInput;
+  draft: StoredResumeInput;
+  upload: StoredResumeUploadState | null;
+  savedAt: string | null;
+  parsedAt: string | null;
+} {
+  const stored = getStoredResumeInput();
+  return {
+    stored,
+    draft: draft ?? stored,
+    upload: getStoredResumeUploadState(),
+    savedAt: getResumeSavedAt(),
+    parsedAt: getResumeParsedAt(),
+  };
+}
+
+type ResumeWritePreserve = "preserve";
+
+function writeResumeRecord(
+  input: StoredResumeInput,
+  options?: {
+    savedAt?: string | null | ResumeWritePreserve;
+    parsedAt?: string | null | ResumeWritePreserve;
+    upload?: StoredResumeUploadState | null | ResumeWritePreserve;
+  },
+): void {
+  const existingUpload = getStoredResumeUploadState();
+  const uploadState =
+    options?.upload === undefined || options.upload === "preserve"
+      ? existingUpload
+      : options.upload;
+  const existingSavedAt = getResumeSavedAt();
+  const nextSavedAt =
+    options?.savedAt === undefined || options.savedAt === "preserve"
+      ? (existingSavedAt ?? "")
+      : (options.savedAt ?? "");
+  const existingParsedAt = getResumeParsedAt();
+  const nextParsedAt =
+    options?.parsedAt === undefined || options.parsedAt === "preserve"
+      ? (existingParsedAt ?? "")
+      : (options.parsedAt ?? "");
+
   writeScopedJson("resume", {
     summary: input.summary.trim(),
     skills: input.skills.trim(),
     highlights: input.highlights.trim(),
+    uploadFileName: uploadState?.fileName ?? "",
+    uploadedAt: uploadState?.uploadedAt ?? "",
+    savedAt: nextSavedAt,
+    parsedAt: nextParsedAt,
+  });
+}
+
+/** Persist parsed or edited content without confirming for analysis yet. */
+export function saveStoredResumeDraft(input: StoredResumeInput): void {
+  if (!isBrowser()) return;
+  writeResumeRecord(input, { savedAt: null, parsedAt: "preserve" });
+}
+
+export function saveStoredResumeInput(input: StoredResumeInput): void {
+  if (!isBrowser()) return;
+  writeResumeRecord(input, { savedAt: new Date().toISOString(), parsedAt: null });
+}
+
+export function markResumeParsed(input: StoredResumeInput): void {
+  if (!isBrowser()) return;
+  writeResumeRecord(input, { savedAt: null, parsedAt: new Date().toISOString() });
+}
+
+export function saveStoredResumeUploadState(state: StoredResumeUploadState): void {
+  if (!isBrowser()) return;
+  writeResumeRecord(getStoredResumeInput(), {
+    upload: {
+      fileName: state.fileName.trim(),
+      uploadedAt: state.uploadedAt.trim(),
+    },
+    savedAt: "preserve",
+    parsedAt: "preserve",
+  });
+}
+
+export function clearStoredResumeUploadState(): void {
+  if (!isBrowser()) return;
+  writeResumeRecord(getStoredResumeInput(), {
+    upload: null,
+    savedAt: "preserve",
+    parsedAt: "preserve",
   });
 }
 

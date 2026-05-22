@@ -99,6 +99,48 @@ export function confidenceToAxisPercent(level: ConfidenceLevel): number {
   return 18;
 }
 
+export const EVIDENCE_STRENGTH_DISCLAIMER =
+  "Evidence strength measures how much proof your resume provides for this role—not whether you're qualified.";
+
+export function formatEvidenceStrengthLabel(level: ConfidenceLevel): string {
+  return `Evidence strength: ${level}`;
+}
+
+export function formatEvidenceStrengthShort(level: ConfidenceLevel): string {
+  if (level === "High") return "Strong evidence on resume";
+  if (level === "Medium") return "Moderate evidence on resume";
+  return "Needs more resume evidence";
+}
+
+export function buildFitPrimaryHeadline(options: {
+  score: number;
+  fitBand: FitBand;
+  verdict: string;
+}): string {
+  return `${options.fitBand} fit (score ${options.score}). ${options.verdict}`;
+}
+
+export function getEncouragingEvidenceInsight(options: {
+  fitBand: FitBand | null;
+  fit: FitCategory | null;
+  evidenceLevel: ConfidenceLevel;
+}): string | null {
+  const isHighFit =
+    options.fitBand === "High" ||
+    options.fit === "Strong Fit" ||
+    options.fit === "Aspirational Fit";
+
+  if (isHighFit && options.evidenceLevel === "Low") {
+    return "This may be a strong fit, but your resume needs more evidence to prove it.";
+  }
+
+  if (options.fitBand === "Medium" && options.evidenceLevel === "Low") {
+    return "There may be useful overlap here—clearer resume evidence will make that easier to see.";
+  }
+
+  return null;
+}
+
 export function fitScoreToAxisPercent(score: number): number {
   const normalized = Math.max(0, Math.min(100, score));
   return 92 - normalized * 0.84;
@@ -126,18 +168,45 @@ export function explainConfidenceLevel(input: {
   keyRequirementEvidenceCount: number;
 }): string {
   if (input.confidence === "High") {
-    return "Confidence is high because the resume gives clear, role-relevant evidence across the main requirements.";
+    return "Your resume includes clear, role-relevant proof across the main requirements.";
   }
 
   if (input.confidence === "Medium") {
-    return "Confidence is medium because the resume supports part of the role, but some evidence still needs to be clearer or more specific.";
+    return "Your resume supports part of this role, and a few areas would benefit from clearer or more specific examples.";
   }
 
   if (input.missingEvidenceCount > 0 && input.keyRequirementEvidenceCount <= 1) {
-    return "Confidence is low because the resume only partially supports the role and some evidence is missing.";
+    return "Your resume only partially documents this role so far—adding targeted examples can strengthen the picture.";
   }
 
-  return "Confidence is low because the resume does not yet give enough specific evidence to trust this fit read.";
+  return "Your resume does not yet include enough specific proof for this role. That is about documentation, not your potential.";
+}
+
+export function explainEvidenceStrengthChange(options: {
+  previousLevel: ConfidenceLevel;
+  nextLevel: ConfidenceLevel;
+  hasMissingEvidence: boolean;
+  evidenceLooksConcrete: boolean;
+}): string | null {
+  if (options.previousLevel === options.nextLevel) return null;
+
+  if (options.nextLevel === "High") {
+    return "Evidence strength improved—your resume now shows clearer, measurable impact for this role.";
+  }
+
+  if (options.nextLevel === "Low") {
+    return options.hasMissingEvidence
+      ? "Evidence strength is still building. A few targeted resume updates can make your fit easier to see."
+      : "Evidence strength is still building. More specific examples will help your resume tell a clearer story.";
+  }
+
+  if (options.previousLevel === "Low") {
+    return options.evidenceLooksConcrete
+      ? "Evidence strength improved with your updates. A few more proof points could make this read even clearer."
+      : "Evidence strength improved a bit. Stronger role-specific examples will help even more.";
+  }
+
+  return "Evidence strength shifted after this re-run as your resume proof points changed.";
 }
 
 export function inferConfidenceLevel(input: {

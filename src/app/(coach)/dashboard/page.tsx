@@ -137,7 +137,7 @@ export default function DashboardPage() {
     <>
       <PageHeader
         title="Dashboard"
-        subtitle="Where you stand right now — your resume, your targets, and how you match."
+        subtitle="Your pipeline of roles—resume compared to each job, fit strength, and application progress."
       />
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

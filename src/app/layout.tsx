@@ -14,7 +14,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Coach Chris",
-  description: "Know your fit. Fix your resume. Apply smarter.",
+  description:
+    "Coach Chris compares your resume to job descriptions and helps job seekers improve applications before they apply.",
 };
 
 export default function RootLayout({

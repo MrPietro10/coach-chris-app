@@ -5,8 +5,8 @@ export default function ChatPage() {
   return (
     <>
       <PageHeader
-        title="Chat (Testing Route)"
-        subtitle="Primary chat experience is the floating Ask Chris panel."
+        title="Chat"
+        subtitle="Primary chat experience is the floating Ask Chris panel on every page."
       />
       <section className="rounded-xl border border-zinc-200/80 bg-white p-5">
         <p className="text-sm text-zinc-600">

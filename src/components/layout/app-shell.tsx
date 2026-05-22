@@ -35,10 +35,15 @@ export function AppShell({
     <div className="min-h-screen">
       <header className="sticky top-0 z-40 border-b border-zinc-200/60 bg-white/90 backdrop-blur-sm">
         <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-5 py-3">
-          <div className="flex items-center gap-2">
-            <p className="text-sm font-semibold tracking-tight text-zinc-900">Coach Chris</p>
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold tracking-tight text-zinc-900">Coach Chris</p>
+              <p className="hidden text-[11px] text-zinc-500 md:block">
+                Resume vs. job fit for candidates
+              </p>
+            </div>
             {isAdmin && (
-              <span className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+              <span className="shrink-0 rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-500">
                 Admin
               </span>
             )}

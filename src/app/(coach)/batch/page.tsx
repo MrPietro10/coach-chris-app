@@ -25,6 +25,10 @@ import {
 } from "@/mock-data/career-coach";
 import type { JobPosting, JobStatus, JobStatusMap } from "@/types/coach";
 
+function notifySessionDataChanged(): void {
+  window.dispatchEvent(new Event("career-coach:analysis-updated"));
+}
+
 function readBatchPageState() {
   return {
     allJobs: getAllStoredJobs(jobs),
@@ -54,6 +58,7 @@ export default function BatchPage() {
   const [editCompany, setEditCompany] = useState("");
   const [editLocation, setEditLocation] = useState("");
   const [editDescription, setEditDescription] = useState("");
+  const [navigatingJobId, setNavigatingJobId] = useState<string | null>(null);
 
   useEffect(() => {
     const refresh = () => {
@@ -97,16 +102,16 @@ export default function BatchPage() {
   return (
     <>
       <PageHeader
-        title="Jobs"
-        subtitle="Manage saved jobs and open analysis for a selected role."
+        title="Saved jobs"
+        subtitle="Jobs you are comparing against your resume. Open fit results to review match, gaps, and next steps."
       />
       <section className="rounded-xl border border-zinc-200/80 bg-white p-5">
         <h2 className="text-sm font-medium text-zinc-900">Saved jobs</h2>
         {allJobs.length === 0 ? (
           <div className="mt-3 rounded-lg border border-zinc-100 bg-zinc-50/60 px-4 py-4">
-            <p className="text-sm text-zinc-600">Start by adding your first job.</p>
+            <p className="text-sm text-zinc-600">Add a job description to compare against your resume.</p>
             <p className="mt-1 text-xs text-zinc-500">
-              Paste a job description in Analyze after your resume is ready. Saved roles will show up here.
+              After you paste a role in Add job, it appears here so you can reopen fit results anytime.
             </p>
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <button
@@ -151,12 +156,15 @@ export default function BatchPage() {
                         <span>Insufficient evidence for fit score.</span>
                         <button
                           type="button"
+                          disabled={navigatingJobId !== null}
                           onClick={() => {
+                            if (navigatingJobId) return;
+                            setNavigatingJobId(job.id);
                             setSelectedJobId(job.id);
                             markPendingAnalysisJobId(job.id);
                             router.push("/results");
                           }}
-                          className="rounded-md border border-zinc-200 px-2 py-0.5 text-[11px] font-medium text-zinc-600 transition-colors hover:bg-zinc-50"
+                          className="rounded-md border border-zinc-200 px-2 py-0.5 text-[11px] font-medium text-zinc-600 transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
                         >
                           Complete analysis
                         </button>
@@ -167,16 +175,23 @@ export default function BatchPage() {
                     {analysis && <FitBadge fit={analysis.fit} score={analysis.score} />}
                     <button
                       type="button"
+                      disabled={navigatingJobId !== null}
                       onClick={() => {
+                        if (navigatingJobId) return;
+                        setNavigatingJobId(job.id);
                         setSelectedJobId(job.id);
                         if (!hasAnalysis) {
                           markPendingAnalysisJobId(job.id);
                         }
                         router.push("/results");
                       }}
-                      className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50"
+                      className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      {hasAnalysis ? "See analysis" : "Analyze fit"}
+                      {navigatingJobId === job.id
+                        ? "Opening..."
+                        : hasAnalysis
+                          ? "See analysis"
+                          : "Analyze fit"}
                     </button>
                     {status !== "For Interview" && (
                       <button
@@ -184,6 +199,7 @@ export default function BatchPage() {
                         onClick={() => {
                           setStoredJobStatus(job.id, "For Interview");
                           refreshData();
+                          notifySessionDataChanged();
                         }}
                         className="rounded-md border border-zinc-200 px-2 py-1 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-50"
                       >
@@ -216,6 +232,7 @@ export default function BatchPage() {
                             if (!ok) return;
                             deleteUserJob(job.id);
                             refreshData();
+                            notifySessionDataChanged();
                           }}
                           className="rounded-md border border-zinc-200 px-2 py-1 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-50 hover:text-zinc-700"
                         >
@@ -267,6 +284,7 @@ export default function BatchPage() {
                             description: editDescription.trim() || job.description,
                           });
                           refreshData();
+                          notifySessionDataChanged();
                           setEditingJobId(null);
                           if (!updated) return;
                         }}

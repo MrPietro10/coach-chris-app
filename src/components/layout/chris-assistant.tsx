@@ -32,6 +32,7 @@ function getPageContext(pathname: string): { label: string; hint: string } {
   if (pathname.startsWith("/profile")) return { label: "Profile", hint: "your profile" };
   if (pathname.startsWith("/resume")) return { label: "Resume", hint: "your resume" };
   if (pathname.startsWith("/batch")) return { label: "Jobs", hint: "your saved jobs" };
+  if (pathname.startsWith("/chat")) return { label: "Chat", hint: "your coaching conversation" };
   return { label: "Home", hint: "Coach Chris" };
 }
 
@@ -883,7 +884,7 @@ function buildFitConfidenceDecisionResponse(options: {
       return `${roleLabel} is a strong match - I’d prioritize this role and apply now.`;
     }
     if (confidence === "Low") {
-      return `${roleLabel} could be a strong match, but your resume does not prove it clearly yet. Strengthen your examples first, then apply.`;
+      return `${roleLabel} may be a strong fit, but your resume needs more evidence to prove it. Strengthen your examples first, then apply.`;
     }
     return `${roleLabel} looks promising. I’d apply, but do one focused polish pass on evidence before submitting.`;
   }
@@ -893,7 +894,7 @@ function buildFitConfidenceDecisionResponse(options: {
       return `${roleLabel} is not a strong match based on your current experience - I would not prioritize this role.`;
     }
     if (confidence === "Low") {
-      return `${roleLabel} is unclear and missing key evidence. Focus on stronger matches for now.`;
+      return `${roleLabel} may not be the best use of time right now—your resume does not yet show enough proof for this role. Focus on stronger matches first.`;
     }
     return `${roleLabel} is currently a weak match. Keep it as a backup and prioritize stronger-fit roles first.`;
   }
@@ -902,7 +903,7 @@ function buildFitConfidenceDecisionResponse(options: {
     return `${roleLabel} is a reasonable match. I’d apply selectively after your top-priority strong-fit roles.`;
   }
   if (confidence === "Low") {
-    return `${roleLabel} might be viable, but evidence is too thin right now. Improve specificity before deciding.`;
+    return `${roleLabel} might be viable, but your resume evidence is still thin. Add clearer proof before deciding.`;
   }
   return `${roleLabel} is a middle-fit option. Apply if your stronger roles are already in motion, and tailor your evidence first.`;
 }
@@ -924,12 +925,12 @@ function buildFitExplanationResponse(options: {
   const fitLevel = getSimpleFitLevel(options.fitScore);
   const topStrength = options.strengths[0] ?? "your background shows relevant overlap";
   const topGap = options.gaps[0] ?? "key role evidence is still thin";
-  const confidenceExplanation =
+  const evidenceExplanation =
     options.confidence === "High"
-      ? "This read is well supported by clear evidence in your background."
+      ? "Evidence strength is high—your resume shows clear, role-relevant proof."
       : options.confidence === "Medium"
-      ? "This read is directionally useful, but some evidence is still thin or incomplete."
-      : "This read is still uncertain because key evidence is missing or too vague.";
+      ? "Evidence strength is moderate—useful signal, with room to add clearer examples."
+      : "Evidence strength is still building—this reflects resume proof on the page, not your potential.";
   const summary =
     fitLevel === "High"
       ? `You’re well aligned with the core requirements here, especially around ${topStrength.toLowerCase()}.`
@@ -955,8 +956,8 @@ function buildFitExplanationResponse(options: {
 Fit summary:
 ${summary}
 
-Confidence:
-${confidenceExplanation}
+Evidence strength:
+${evidenceExplanation}
 
 Strongest signal:
 ${topStrength}
@@ -1002,8 +1003,8 @@ function buildLocalResultsFallbackResponse(options: {
 Fit summary:
 You have some relevant overlap, but the signal is not complete yet.
 
-Confidence:
-This read is ${options.confidence.toLowerCase()}, so use it as guidance rather than a final verdict.
+Evidence strength:
+Resume evidence is ${options.confidence.toLowerCase()} for this role—use fit strength to prioritize and evidence strength to see what to add next.
 
 Strongest signal:
 ${topStrength}
@@ -1049,7 +1050,7 @@ function buildPrioritizedRolesResponse(): string {
     });
 
   if (scored.length === 0) {
-    return "I don’t have scored roles yet. Run fit analysis on your saved jobs, then I can prioritize them with fit and confidence.";
+    return "I don’t have scored roles yet. Run fit analysis on your saved jobs, then I can prioritize them by fit and evidence strength.";
   }
 
   const splitIndex = Math.max(1, Math.ceil(scored.length / 2));
@@ -1059,7 +1060,7 @@ function buildPrioritizedRolesResponse(): string {
   const topLines = topPriority
     .map(
       (item) =>
-        `• ${item.company} — ${item.role} (Fit ${item.fitScore}, Confidence ${item.confidence})`,
+        `• ${item.company} — ${item.role} (Fit ${item.fitScore}, Evidence ${item.confidence})`,
     )
     .join("\n");
   const lowerLines =
@@ -1067,7 +1068,7 @@ function buildPrioritizedRolesResponse(): string {
       ? lowerPriority
           .map(
             (item) =>
-              `• ${item.company} — ${item.role} (Fit ${item.fitScore}, Confidence ${item.confidence})`,
+              `• ${item.company} — ${item.role} (Fit ${item.fitScore}, Evidence ${item.confidence})`,
           )
           .join("\n")
       : "• None right now";
@@ -1529,7 +1530,7 @@ export function ChrisAssistant() {
           if (!selectedAnalysis || !selectedJobId) {
             pushMessages(
               userText,
-              "I don’t have a current fit read yet. Re-run analysis and I’ll explain your fit, confidence, strengths, and gaps.",
+              "I don’t have a current fit read yet. Re-run analysis and I’ll explain your fit, evidence strength, strengths, and gaps.",
             );
             return;
           }
@@ -1556,7 +1557,7 @@ export function ChrisAssistant() {
         if (!selectedAnalysis || !selectedJobId) {
           pushMessages(
             userText,
-            "I need a current fit read first. Re-run analysis, then I can give a clear fit-and-confidence recommendation.",
+            "I need a current fit read first. Re-run analysis, then I can give a clear fit and evidence-strength recommendation.",
           );
           return;
         }
@@ -1928,6 +1929,7 @@ export function ChrisAssistant() {
 
   const handleAction = useCallback(
     (actionId: string, actionLabel: string) => {
+      if (isSubmittingRef.current) return;
       const interviewJobs = getLiveInterviewJobs();
       const selectedInterviewJob = interviewJobs.find((job) => job.id === selectedInterviewJobId) ?? null;
       if (actionId === "mode:general" || actionId === "mock:switch-general") {
