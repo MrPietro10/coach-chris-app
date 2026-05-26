@@ -2,22 +2,25 @@
 
 import Link from "next/link";
 import { Fragment, useEffect, useMemo, useState } from "react";
-import { useIsClient } from "@/hooks/use-is-client";
-import { JobApplicationTracking } from "@/components/jobs/job-application-tracking";
-import { FitBadge } from "@/components/ui/fit-badge";
+import { DashboardActiveJobPanel } from "@/components/jobs/dashboard-active-job-panel";
+import { DashboardJobCard } from "@/components/jobs/dashboard-job-card";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatCard } from "@/components/ui/stat-card";
-import { getReadyAnalysisForJob } from "@/lib/analysis-records";
+import { ACTIVE_JOB_CHANGED_EVENT, getActiveJobSnapshot } from "@/lib/active-job";
 import {
+  buildDashboardJobEntries,
+  getRecentlyAnalyzedEntries,
+  sortByLastUpdated,
+} from "@/lib/dashboard-jobs";
+import {
+  deleteUserJob,
   getActiveResumeLabel,
   getAllStoredJobs,
-  getAnalyzedJobsState,
   getComputedJobAnalysesState,
-  setSelectedJobId,
+  JOB_WORKSPACE_CHANGED_EVENT,
 } from "@/lib/job-session-store";
 import {
   JOB_STATUS_BAR_ACTIVE,
-  JOB_STATUS_DOT,
   JOB_STATUS_LABELS,
   PIPELINE_STAGES,
 } from "@/lib/job-pipeline";
@@ -26,88 +29,106 @@ import {
   JOB_PIPELINE_UPDATED_EVENT,
 } from "@/lib/job-pipeline-store";
 import { analyses, jobs } from "@/mock-data/career-coach";
-import type { JobAnalysis, JobPosting, JobStatus } from "@/types/coach";
-
-type GroupedItem = { job: JobPosting; analysis: JobAnalysis };
+import type { JobStatus } from "@/types/coach";
+import { useIsClient } from "@/hooks/use-is-client";
 
 function readDashboardState() {
   const trackedJobs = getAllStoredJobs(jobs);
   const computedAnalyses = getComputedJobAnalysesState();
-  const analyzedJobsState = getAnalyzedJobsState();
-  const analyzedItems: GroupedItem[] = [];
-  for (const job of trackedJobs) {
-    const analysis = getReadyAnalysisForJob(job.id, computedAnalyses, analyses);
-    if (!analysis && !analyzedJobsState[job.id]) continue;
-    if (!analysis) continue;
-    analyzedItems.push({ job, analysis });
-  }
+  const statuses = getStoredJobStatuses();
+  const activeSnapshot = getActiveJobSnapshot(jobs);
+  const entries = buildDashboardJobEntries({
+    trackedJobs,
+    computedAnalyses,
+    staticAnalyses: analyses,
+    statuses,
+  });
 
   return {
-    trackedJobs,
-    analyzedItems,
+    entries,
     activeResumeLabel: getActiveResumeLabel(),
-    statuses: getStoredJobStatuses(),
+    statuses,
+    activeJobId: activeSnapshot.activeJobId,
+    analyzingJobId: activeSnapshot.analyzingJobId,
+    savedJobCount: trackedJobs.length,
+    analyzedCount: entries.filter((entry) => entry.hasReadyAnalysis).length,
   };
 }
 
 export default function DashboardPage() {
   const isClient = useIsClient();
-  const [dashboardState, setDashboardState] = useState(() =>
+  const baseJobIds = useMemo(() => new Set(jobs.map((job) => job.id)), []);
+  const [state, setState] = useState(() =>
     typeof window === "undefined"
       ? {
-          trackedJobs: jobs,
-          analyzedItems: [] as GroupedItem[],
+          entries: [],
           activeResumeLabel: "Not added",
           statuses: {} as Record<string, JobStatus>,
+          activeJobId: null as string | null,
+          analyzingJobId: null as string | null,
+          savedJobCount: 0,
+          analyzedCount: 0,
         }
       : readDashboardState(),
   );
 
   useEffect(() => {
     if (!isClient) return;
-
-    const refresh = () => setDashboardState(readDashboardState());
-
+    const refresh = () => setState(readDashboardState());
     refresh();
     window.addEventListener("storage", refresh);
     window.addEventListener("focus", refresh);
     window.addEventListener("career-coach:analysis-updated", refresh);
     window.addEventListener(JOB_PIPELINE_UPDATED_EVENT, refresh);
+    window.addEventListener(ACTIVE_JOB_CHANGED_EVENT, refresh);
+    window.addEventListener(JOB_WORKSPACE_CHANGED_EVENT, refresh);
     return () => {
       window.removeEventListener("storage", refresh);
       window.removeEventListener("focus", refresh);
       window.removeEventListener("career-coach:analysis-updated", refresh);
       window.removeEventListener(JOB_PIPELINE_UPDATED_EVENT, refresh);
+      window.removeEventListener(ACTIVE_JOB_CHANGED_EVENT, refresh);
+      window.removeEventListener(JOB_WORKSPACE_CHANGED_EVENT, refresh);
     };
   }, [isClient]);
 
+  const sortedEntries = useMemo(() => sortByLastUpdated(state.entries), [state.entries]);
+  const activeEntry = useMemo(
+    () => state.entries.find((entry) => entry.job.id === state.activeJobId) ?? null,
+    [state.entries, state.activeJobId],
+  );
+  const recentlyAnalyzed = useMemo(
+    () => getRecentlyAnalyzedEntries(state.entries),
+    [state.entries],
+  );
+  const pipelineCounts = useMemo(() => {
+    const counts = Object.fromEntries(PIPELINE_STAGES.map((stage) => [stage, 0])) as Record<
+      JobStatus,
+      number
+    >;
+    for (const entry of state.entries) {
+      const status = state.statuses[entry.job.id] ?? entry.pipelineStatus;
+      if (status && counts[status] !== undefined) counts[status] += 1;
+    }
+    return counts;
+  }, [state.entries, state.statuses]);
+
+  const activePipeline = state.entries.filter((entry) => {
+    const status = state.statuses[entry.job.id] ?? entry.pipelineStatus ?? "Analyzed";
+    return status !== "Archived";
+  }).length;
+
   function updateStatus(jobId: string, status: JobStatus) {
-    setDashboardState((prev) => ({
+    setState((prev) => ({
       ...prev,
       statuses: { ...prev.statuses, [jobId]: status },
     }));
   }
 
-  const grouped = useMemo(() => {
-    const next = Object.fromEntries(
-      PIPELINE_STAGES.map((stage) => [stage, [] as GroupedItem[]]),
-    ) as Record<JobStatus, GroupedItem[]>;
-
-    for (const item of dashboardState.analyzedItems) {
-      const status = dashboardState.statuses[item.job.id] ?? "Analyzed";
-      next[status].push(item);
-    }
-
-    return next;
-  }, [dashboardState.analyzedItems, dashboardState.statuses]);
-
-  const strongFits = dashboardState.analyzedItems.filter(
-    (item) => item.analysis.fit === "Strong Fit",
-  ).length;
-  const offers = grouped.Offer.length;
-  const activePipeline = dashboardState.analyzedItems.filter(
-    (item) => (dashboardState.statuses[item.job.id] ?? "Analyzed") !== "Archived",
-  ).length;
+  function handleRemove(jobId: string) {
+    deleteUserJob(jobId);
+    setState(readDashboardState());
+  }
 
   if (!isClient) {
     return null;
@@ -117,36 +138,57 @@ export default function DashboardPage() {
     <>
       <PageHeader
         title="Dashboard"
-        subtitle="Track application status and notes for each role alongside your fit analysis."
+        subtitle="Your job workspace — track roles, switch context, and jump back into analysis."
+      />
+
+      <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+        <Link href="/analyze" className="font-medium text-zinc-700 underline-offset-2 hover:underline">
+          Add job
+        </Link>
+        <span aria-hidden>·</span>
+        <Link href="/batch" className="font-medium text-zinc-700 underline-offset-2 hover:underline">
+          Saved jobs
+        </Link>
+        <span aria-hidden>·</span>
+        <Link href="/results" className="font-medium text-zinc-700 underline-offset-2 hover:underline">
+          Fit results
+        </Link>
+      </div>
+
+      <DashboardActiveJobPanel
+        entry={activeEntry}
+        isAnalyzing={Boolean(
+          state.activeJobId && state.analyzingJobId && state.activeJobId === state.analyzingJobId,
+        )}
       />
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Active resume" value={dashboardState.activeResumeLabel} />
-        <StatCard label="Jobs in pipeline" value={`${activePipeline}`} />
-        <StatCard label="Strong fits" value={`${strongFits}`} />
-        <StatCard label="Offers" value={`${offers}`} />
+        <StatCard label="Saved jobs" value={`${state.savedJobCount}`} />
+        <StatCard label="Analyzed" value={`${state.analyzedCount}`} />
+        <StatCard label="In pipeline" value={`${activePipeline}`} />
+        <StatCard label="Active resume" value={state.activeResumeLabel} />
       </div>
 
-      <section className="rounded-xl border border-zinc-200/80 bg-white p-5">
-        <h2 className="text-sm font-medium text-zinc-900">Pipeline</h2>
-        <p className="mt-1 text-xs text-zinc-500">
-          Update status and notes on each role as your search progresses.
-        </p>
-
-        <div className="mt-4 flex items-center gap-1 overflow-x-auto pb-1">
+      <section className="rounded-xl border border-zinc-200/80 bg-white p-4">
+        <h2 className="text-sm font-medium text-zinc-900">Pipeline overview</h2>
+        <div className="mt-3 flex items-center gap-1 overflow-x-auto pb-1">
           {PIPELINE_STAGES.map((stage, i) => {
-            const count = grouped[stage].length;
+            const count = pipelineCounts[stage];
             const hasJobs = count > 0;
             return (
               <Fragment key={stage}>
                 {i > 0 ? <div className="mx-0.5 h-px w-4 shrink-0 bg-zinc-200" /> : null}
                 <div
                   className={`flex shrink-0 flex-col items-center rounded-lg border px-3 py-2 ${
-                    hasJobs ? JOB_STATUS_BAR_ACTIVE[stage] : "border-zinc-100 bg-zinc-50/50 text-zinc-300"
+                    hasJobs
+                      ? JOB_STATUS_BAR_ACTIVE[stage]
+                      : "border-zinc-100 bg-zinc-50/50 text-zinc-300"
                   }`}
                   title={JOB_STATUS_LABELS[stage]}
                 >
-                  <span className={`text-base font-semibold leading-none ${hasJobs ? "" : "text-zinc-300"}`}>
+                  <span
+                    className={`text-base font-semibold leading-none ${hasJobs ? "" : "text-zinc-300"}`}
+                  >
                     {count}
                   </span>
                   <span className="mt-1 max-w-[4.5rem] truncate text-[9px] font-medium leading-tight">
@@ -157,79 +199,67 @@ export default function DashboardPage() {
             );
           })}
         </div>
+      </section>
 
-        <div className="mt-6 space-y-6">
-          {PIPELINE_STAGES.map((stage) => {
-            const items = grouped[stage];
-            if (items.length === 0) return null;
-            return (
-              <div key={stage}>
-                <div className="flex items-center gap-2">
-                  <span className={`h-2 w-2 rounded-full ${JOB_STATUS_DOT[stage]}`} />
-                  <h3 className="text-[11px] font-semibold uppercase tracking-wide text-zinc-600">
-                    {JOB_STATUS_LABELS[stage]}
-                  </h3>
-                  <span className="text-[11px] font-medium text-zinc-400">{items.length}</span>
-                </div>
+      {recentlyAnalyzed.length > 0 ? (
+        <section className="space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-sm font-medium text-zinc-900">Recently analyzed</h2>
+            <p className="text-xs text-zinc-500">Latest fit runs across your saved roles</p>
+          </div>
+          <div className="grid gap-3 lg:grid-cols-2">
+            {recentlyAnalyzed.map((entry) => (
+              <DashboardJobCard
+                key={entry.job.id}
+                entry={entry}
+                isActive={state.activeJobId === entry.job.id}
+                isAnalyzing={state.analyzingJobId === entry.job.id}
+                isUserAdded={!baseJobIds.has(entry.job.id)}
+                compact
+                onStatusChange={updateStatus}
+                onRemove={handleRemove}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
 
-                <div className="mt-2 space-y-3">
-                  {items.map(({ job, analysis }) => (
-                    <div
-                      key={job.id}
-                      className="rounded-lg border border-zinc-200 bg-white px-4 py-3 shadow-sm"
-                    >
-                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <p className="text-sm font-semibold text-zinc-900">{job.title}</p>
-                            <FitBadge fit={analysis.fit} score={analysis.score} />
-                          </div>
-                          <p className="mt-0.5 text-xs text-zinc-500">
-                            {job.company}
-                            {job.location ? ` · ${job.location}` : ""}
-                          </p>
-                          <Link
-                            href="/results"
-                            onClick={() => setSelectedJobId(job.id)}
-                            className="mt-1 inline-block text-[11px] font-medium text-zinc-600 underline-offset-2 hover:underline"
-                          >
-                            View fit results
-                          </Link>
-                        </div>
-                      </div>
-                      <div className="mt-3">
-                        <JobApplicationTracking
-                          key={job.id}
-                          jobId={job.id}
-                          currentStatus={dashboardState.statuses[job.id] ?? "Analyzed"}
-                          hasAnalysis
-                          variant="card"
-                          onStatusChange={(next) => updateStatus(job.id, next)}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-          {dashboardState.analyzedItems.length === 0 ? (
-            <p className="text-sm text-zinc-500">Run analysis on saved jobs to populate your pipeline.</p>
-          ) : null}
+      <section className="space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-sm font-medium text-zinc-900">All saved jobs</h2>
+          <span className="text-xs text-zinc-500">{sortedEntries.length} roles</span>
         </div>
+
+        {sortedEntries.length === 0 ? (
+          <div className="rounded-xl border border-zinc-200/80 bg-white px-5 py-6 text-center">
+            <p className="text-sm text-zinc-600">No saved jobs yet.</p>
+            <Link
+              href="/analyze"
+              className="mt-3 inline-block rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-800"
+            >
+              Add your first job
+            </Link>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {sortedEntries.map((entry) => (
+              <DashboardJobCard
+                key={entry.job.id}
+                entry={entry}
+                isActive={state.activeJobId === entry.job.id}
+                isAnalyzing={state.analyzingJobId === entry.job.id}
+                isUserAdded={!baseJobIds.has(entry.job.id)}
+                onStatusChange={updateStatus}
+                onRemove={handleRemove}
+              />
+            ))}
+          </div>
+        )}
       </section>
 
-      <section className="rounded-xl border border-zinc-200/80 bg-white p-5">
-        <h2 className="text-sm font-medium text-zinc-900">Next steps</h2>
-        <ul className="mt-3 space-y-1.5 text-sm text-zinc-600">
-          <li>Update status when you apply, interview, receive offers, or close out roles.</li>
-          <li>Use application notes for recruiter feedback and interview prep.</li>
-          <li>Review fit results before prioritizing which roles to pursue.</li>
-        </ul>
-      </section>
-
-      <p className="pt-1 text-xs text-zinc-400">
-        Pipeline data is stored locally in your browser (alpha-scoped) and isn&apos;t shared with other users.
+      <p className="text-xs text-zinc-400">
+        Job data is stored locally in your browser (alpha-scoped). Switch active jobs anytime — pipeline
+        notes and analysis stay tied to each role.
       </p>
     </>
   );

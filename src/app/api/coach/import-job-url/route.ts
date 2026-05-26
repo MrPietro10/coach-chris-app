@@ -78,11 +78,20 @@ export async function POST(request: Request) {
       );
     }
 
+    const includeDiagnostics = process.env.NODE_ENV !== "production";
+
     return NextResponse.json({
       description: result.description,
       suggestedTitle: result.suggestedTitle,
+      company: result.company,
+      location: result.location,
+      extractionQuality: result.extractionQuality,
+      reviewHint: result.reviewHint,
       sourceUrl: result.sourceUrl,
       provider: result.provider,
+      ...(includeDiagnostics && result.importDiagnostics
+        ? { diagnostics: result.importDiagnostics }
+        : {}),
     });
   } catch (error) {
     if (process.env.NODE_ENV !== "production") {

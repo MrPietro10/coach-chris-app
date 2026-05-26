@@ -430,28 +430,13 @@ export class GeminiProvider implements AIProvider {
           : "Assesses alignment with role scope and core responsibilities.",
     };
 
-    const experienceDriverStrength =
-      rubricScores.experience >= 65
-        ? "Primary driver: your relevant experience depth is a strong match for this role."
-        : "Primary driver to improve: strengthen direct role-relevant experience evidence.";
-    const experienceDriverGap =
-      rubricScores.experience < 60
-        ? "Experience depth is the main gap right now; add one concrete example that matches this role's core responsibilities."
-        : "Experience depth is solid; focus next on strengthening measurable evidence and role specificity.";
-
-    const topStrengthsWithDriver = cleanList(
-      [experienceDriverStrength, ...(
-        Array.isArray(parsed.topStrengths)
-          ? parsed.topStrengths.filter((item): item is string => typeof item === "string")
-          : []
-      )],
+    const topStrengthsClean = cleanList(
+      Array.isArray(parsed.topStrengths)
+        ? parsed.topStrengths.filter((item): item is string => typeof item === "string")
+        : [],
       3,
     );
-    const topGapsWithDriver = cleanList(
-      [experienceDriverGap, ...topGapsOutput],
-      3,
-      missingEvidenceKeys,
-    );
+    const topGapsWithDriver = cleanList(topGapsOutput, 4, missingEvidenceKeys);
 
     return {
       provider: this.id,
@@ -462,7 +447,7 @@ export class GeminiProvider implements AIProvider {
         typeof parsed.overallFitSummary === "string" && parsed.overallFitSummary.trim().length > 0
           ? parsed.overallFitSummary.trim()
           : "Evidence is incomplete to produce a reliable fit summary.",
-      topStrengths: topStrengthsWithDriver,
+      topStrengths: topStrengthsClean,
       topGaps: topGapsWithDriver,
       riskAreas: riskAreasOutput,
       highestPriorityImprovement,

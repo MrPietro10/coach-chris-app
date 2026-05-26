@@ -1,0 +1,53 @@
+"use client";
+
+type RemoveResumeConfirmDialogProps = {
+  open: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+};
+
+export function RemoveResumeConfirmDialog({
+  open,
+  onConfirm,
+  onCancel,
+}: RemoveResumeConfirmDialogProps) {
+  if (!open) {
+    return null;
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-zinc-900/50 px-5"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="remove-resume-title"
+      aria-describedby="remove-resume-description"
+    >
+      <section className="w-full max-w-md rounded-xl border border-zinc-200 bg-white p-6 shadow-xl">
+        <h2 id="remove-resume-title" className="text-lg font-semibold text-zinc-900">
+          Remove active resume?
+        </h2>
+        <p id="remove-resume-description" className="mt-2 text-sm text-zinc-600">
+          This clears your saved resume text and upload from this browser session. Existing job
+          analyses stay until you re-run them with a new resume.
+        </p>
+        <div className="mt-5 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-zinc-800"
+          >
+            Remove resume
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50"
+          >
+            Keep resume
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}

@@ -21,6 +21,10 @@ type JobUrlImportProps = {
   onImported: (payload: {
     description: string;
     suggestedTitle: string | null;
+    company: string | null;
+    location: string | null;
+    extractionQuality: "good" | "fair" | "weak";
+    reviewHint: string | null;
     sourceUrl: string;
   }) => void;
   disabled?: boolean;
@@ -60,6 +64,10 @@ export function JobUrlImport({ onImported, disabled = false }: JobUrlImportProps
       const payload = (await response.json()) as {
         description?: string;
         suggestedTitle?: string | null;
+        company?: string | null;
+        location?: string | null;
+        extractionQuality?: "good" | "fair" | "weak";
+        reviewHint?: string | null;
         sourceUrl?: string;
         error?: string;
         title?: string;
@@ -106,6 +114,10 @@ export function JobUrlImport({ onImported, disabled = false }: JobUrlImportProps
       onImported({
         description,
         suggestedTitle: payload.suggestedTitle ?? null,
+        company: payload.company ?? null,
+        location: payload.location ?? null,
+        extractionQuality: payload.extractionQuality ?? "good",
+        reviewHint: payload.reviewHint ?? null,
         sourceUrl: payload.sourceUrl ?? trimmedUrl,
       });
 

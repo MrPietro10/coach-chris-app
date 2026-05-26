@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { MobileNav, SidebarNav } from "@/components/layout/sidebar-nav";
 import { ChrisAssistant } from "@/components/layout/chris-assistant";
+import { ActiveJobIndicator } from "@/components/jobs/active-job-indicator";
 import { ActiveResumeIndicator } from "@/components/resume/active-resume-indicator";
 import { ExportUsageLogsButton } from "@/components/layout/export-usage-logs-button";
 import {
@@ -50,6 +51,7 @@ export function AppShell({
             )}
           </div>
           <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
+            <ActiveJobIndicator />
             <ActiveResumeIndicator />
             <ExportUsageLogsButton />
             <MobileNav

@@ -2,12 +2,8 @@
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import {
-  markPendingAnalysisJobId,
-  saveImportedUserJobs,
-  setSelectedJobId,
-  type SpreadsheetJobImportInput,
-} from "@/lib/job-session-store";
+import { setActiveJob } from "@/lib/active-job";
+import { saveImportedUserJobs, type SpreadsheetJobImportInput } from "@/lib/job-session-store";
 import { logEvent } from "@/lib/alpha-usage-logger";
 import {
   parseSpreadsheetFile,
@@ -135,8 +131,7 @@ export function JobSpreadsheetImport({ onImported }: JobSpreadsheetImportProps) 
       setErrorMessage(SPREADSHEET_IMPORT_FAILURE_MESSAGE);
       return;
     }
-    setSelectedJobId(jobId);
-    markPendingAnalysisJobId(jobId);
+    setActiveJob(jobId, { analyzeOnOpen: true });
     logEvent("import_jobs_spreadsheet_analyze", { jobTitle: row.title || row.company });
     router.push("/results");
   }

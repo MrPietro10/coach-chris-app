@@ -16,7 +16,7 @@ export const ONBOARDING_STEPS = [
   {
     step: 2,
     title: "Add a job",
-    description: "Add a real role you are considering so Chris can compare against it.",
+    description: "Add a real role you are considering so Chris can analyze fit against it.",
   },
   {
     step: 3,

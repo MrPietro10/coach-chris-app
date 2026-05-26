@@ -90,6 +90,29 @@ export function getJobApplicationNote(jobId: string): string {
   return getJobApplicationNotes()[jobId] ?? "";
 }
 
+export function clearJobPipelineState(jobId: string): void {
+  if (!isBrowser()) return;
+
+  const statuses = getStoredJobStatuses();
+  if (jobId in statuses) {
+    delete statuses[jobId];
+    saveJobStatuses(statuses);
+  }
+
+  const timestamps = getStoredJobStatusTimestamps();
+  if (jobId in timestamps) {
+    delete timestamps[jobId];
+    saveJobStatusTimestamps(timestamps);
+  }
+
+  const notes = getJobApplicationNotes();
+  if (jobId in notes) {
+    delete notes[jobId];
+    writeAlphaScopedStorageItem("job-application-notes", JSON.stringify(notes));
+    dispatchPipelineUpdated();
+  }
+}
+
 export function setJobApplicationNote(jobId: string, note: string): void {
   if (!isBrowser()) return;
   const notes = getJobApplicationNotes();

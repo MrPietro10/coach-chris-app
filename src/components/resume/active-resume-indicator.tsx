@@ -13,7 +13,9 @@ export function ActiveResumeIndicator() {
   const [persistence, setPersistence] = useState(() =>
     typeof window === "undefined"
       ? {
-          input: { summary: "", skills: "", highlights: "" },
+          activeResumeId: null,
+          activeResumeName: null,
+          input: { summary: "", skills: "", highlights: "", education: "" },
           upload: null,
           savedAt: null,
           parsedAt: null,
@@ -53,11 +55,11 @@ export function ActiveResumeIndicator() {
   return (
     <p className="hidden max-w-xs truncate text-[11px] text-zinc-600 lg:block" title={preview}>
       {persistence.isSavedForAnalysis ? (
-        <span className="font-medium text-emerald-800">Active resume for analysis:</span>
+        <span className="font-medium text-emerald-800">Active resume for this analysis:</span>
       ) : (
         <span className="font-medium text-amber-800">Resume draft (not saved for analysis):</span>
       )}{" "}
-      {preview || "In progress"}
+      {(persistence.activeResumeName ?? preview) || "In progress"}
       {persistence.upload?.fileName ? (
         <span className="text-zinc-500"> · {persistence.upload.fileName}</span>
       ) : null}

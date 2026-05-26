@@ -6,6 +6,8 @@ export type ResumeWorkspaceSnapshot = {
   upload: StoredResumeUploadState | null;
   savedAt: string | null;
   parsedAt: string | null;
+  activeResumeId?: string | null;
+  activeResumeName?: string | null;
 };
 
 export type ResumeWorkspaceHints = {
@@ -25,13 +27,17 @@ function trimFields(input: StoredResumeInput): StoredResumeInput {
     summary: input.summary.trim(),
     skills: input.skills.trim(),
     highlights: input.highlights.trim(),
+    education: input.education.trim(),
   };
 }
 
 export function hasResumeFieldContent(input: StoredResumeInput): boolean {
   const fields = trimFields(input);
   return (
-    fields.summary.length > 0 || fields.skills.length > 0 || fields.highlights.length > 0
+    fields.summary.length > 0 ||
+    fields.skills.length > 0 ||
+    fields.highlights.length > 0 ||
+    fields.education.length > 0
   );
 }
 
@@ -41,7 +47,8 @@ export function resumeFieldsMatch(a: StoredResumeInput, b: StoredResumeInput): b
   return (
     left.summary === right.summary &&
     left.skills === right.skills &&
-    left.highlights === right.highlights
+    left.highlights === right.highlights &&
+    left.education === right.education
   );
 }
 

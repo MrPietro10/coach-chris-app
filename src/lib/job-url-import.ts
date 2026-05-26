@@ -2,6 +2,7 @@ import {
   extractJobDescriptionFromHtml,
   type JobHtmlExtractionResult,
 } from "@/lib/job-url-import-extractors";
+import { postProcessJobImport } from "@/lib/job-url-import-post-process";
 import {
   buildJobUrlImportDiagnostics,
   logJobUrlImportFailureDiagnostics,
@@ -316,19 +317,24 @@ export function extractFromFetchedHtml(
   ok: true;
   description: string;
   suggestedTitle: string | null;
+  company: string | null;
+  location: string | null;
+  extractionQuality: "good" | "fair" | "weak";
+  reviewHint: string | null;
   extractor: JobHtmlExtractionResult["extractor"];
+  importDiagnostics: ReturnType<typeof postProcessJobImport>["diagnostics"];
 } | { ok: false; code: JobUrlImportErrorCode } {
   logJobUrlImportDiagnostic("extract_started", {
     urlHost: hostname,
     htmlLength: html.length,
   });
 
-  const extracted = extractJobDescriptionFromHtml(html, pageUrl);
+  const rawExtracted = extractJobDescriptionFromHtml(html, pageUrl);
   const blocked = detectBlockedOrPrivatePage({
     html,
     hostname,
     status: httpStatus,
-    extractedLength: extracted.description.length,
+    extractedLength: rawExtracted.description.length,
   });
 
   const pageKind = classifyJobUrlPage(hostname, pageUrl);
@@ -342,7 +348,7 @@ export function extractFromFetchedHtml(
         urlHost: hostname,
         httpStatus,
         fetchedHtmlLength: html.length,
-        extractedTextLength: extracted.description.length,
+        extractedTextLength: rawExtracted.description.length,
         failureReason: "blocked_or_protected_content",
         urlPageKind: pageKind,
         looksLikeSearchResults: searchLike,
@@ -358,7 +364,7 @@ export function extractFromFetchedHtml(
         urlHost: hostname,
         httpStatus,
         fetchedHtmlLength: html.length,
-        extractedTextLength: extracted.description.length,
+        extractedTextLength: rawExtracted.description.length,
         failureReason: "indeed_search_results_after_fetch",
         urlPageKind: pageKind,
         looksLikeSearchResults: true,
@@ -368,14 +374,14 @@ export function extractFromFetchedHtml(
     return { ok: false, code: "indeed_search_page" };
   }
 
-  if (extracted.description.length < MIN_JOB_DESCRIPTION_CHARS) {
+  if (rawExtracted.description.length < MIN_JOB_DESCRIPTION_CHARS) {
     const failureCode = isIndeedHost(hostname) ? "indeed_no_description" : "empty_extraction";
     logFailureWithDiagnostics(
       buildJobUrlImportDiagnostics({
         urlHost: hostname,
         httpStatus,
         fetchedHtmlLength: html.length,
-        extractedTextLength: extracted.description.length,
+        extractedTextLength: rawExtracted.description.length,
         failureReason: "insufficient_extracted_text",
         urlPageKind: pageKind,
         looksLikeSearchResults: searchLike,
@@ -385,16 +391,17 @@ export function extractFromFetchedHtml(
     return { ok: false, code: failureCode };
   }
 
-  logJobUrlImportDiagnostic("extract_success", {
-    urlHost: hostname,
-    extractedLength: extracted.description.length,
-    extractor: extracted.extractor,
-  });
+  const processed = postProcessJobImport(rawExtracted, html, pageUrl, hostname);
 
   return {
     ok: true,
-    description: extracted.description,
-    suggestedTitle: extracted.suggestedTitle,
-    extractor: extracted.extractor,
+    description: processed.description,
+    suggestedTitle: processed.suggestedTitle,
+    company: processed.company,
+    location: processed.location,
+    extractionQuality: processed.extractionQuality,
+    reviewHint: processed.reviewHint,
+    extractor: processed.extractor,
+    importDiagnostics: processed.diagnostics,
   };
 }

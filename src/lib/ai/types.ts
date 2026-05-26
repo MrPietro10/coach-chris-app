@@ -56,6 +56,7 @@ export type AnalyzeSelectedJobInput = {
     summary: string;
     skills: string[];
     experienceHighlights: string[];
+    educationEntries: string[];
   };
   fitContext?: {
     fit: string;

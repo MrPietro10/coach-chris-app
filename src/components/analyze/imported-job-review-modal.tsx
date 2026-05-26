@@ -11,6 +11,8 @@ export type ImportedJobDraft = {
   description: string;
   sourceUrl: string;
   importedAt: string;
+  extractionQuality?: "good" | "fair" | "weak";
+  reviewHint?: string | null;
 };
 
 type ImportedJobReviewModalProps = {
@@ -74,11 +76,17 @@ function ImportedJobReviewContent({
             Review imported job
           </h2>
           <p className="mt-1 text-sm text-zinc-600">
-            Coach Chris found this job information. Review it before continuing.
+            We pulled this from the job link. Review the details before you continue.
           </p>
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4">
+          {draft.reviewHint &&
+          (draft.extractionQuality === "weak" || draft.extractionQuality === "fair") ? (
+            <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+              {draft.reviewHint}
+            </p>
+          ) : null}
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="sm:col-span-2">
               <label htmlFor="review-job-title" className="text-xs font-medium text-zinc-700">

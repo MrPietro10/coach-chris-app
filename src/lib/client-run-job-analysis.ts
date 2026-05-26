@@ -33,6 +33,7 @@ export function calculateResumeCompleteness(input: {
   summary: string;
   skills: string;
   highlights: string;
+  education: string;
 }): number {
   const hasSummary = input.summary.trim().length > 0 ? 1 : 0;
   const hasSkills =
@@ -49,8 +50,15 @@ export function calculateResumeCompleteness(input: {
       .filter((item) => item.length > 0).length > 0
       ? 1
       : 0;
+  const hasEducation =
+    input.education
+      .split("\n")
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0).length > 0
+      ? 1
+      : 0;
 
-  return Math.round(((hasSummary + hasSkills + hasHighlights) / 3) * 100);
+  return Math.round(((hasSummary + hasSkills + hasHighlights + hasEducation) / 4) * 100);
 }
 
 export async function runJobAnalysisForPosting(options: {

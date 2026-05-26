@@ -3,26 +3,34 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ActiveResumeCallout } from "@/components/resume/active-resume-callout";
-import { ResumeParseReviewModal } from "@/components/resume/resume-parse-review-modal";
+import { ResumeVersionBar } from "@/components/resume/resume-version-bar";
+import { RemoveResumeConfirmDialog } from "@/components/resume/remove-resume-confirm-dialog";
+import {
+  ResumeParseReviewModal,
+  type ResumeParseConfirmMode,
+} from "@/components/resume/resume-parse-review-modal";
 import { ResumeParseStatus } from "@/components/resume/resume-parse-status";
 import { ALPHA_SESSION_CHANGED_EVENT } from "@/lib/alpha-session-store";
 import {
-  clearStoredResumeUploadState,
+  clearStoredResume,
+  createResume,
+  getActiveResumeId,
+  getAllResumeRecords,
   getResumeWorkspaceSnapshot,
   getStoredResumeUploadState,
+  removeResume,
   RESUME_STORAGE_CHANGED_EVENT,
-  markResumeParsed,
   saveStoredResumeDraft,
   saveStoredResumeInput,
   saveStoredResumeUploadState,
   type StoredResumeInput,
   type StoredResumeUploadState,
-} from "@/lib/job-session-store";
+} from "@/lib/resume-store";
+import { recordResumeParseFeedback } from "@/lib/resume-parse-feedback";
 import { readResumeUiSyncState } from "@/lib/resume-persistence-sync";
 import type { ResumeParseErrorCode } from "@/lib/resume-parse-messages";
 import {
   getUserFacingParseError,
-  PARSE_SUCCESS_MESSAGE,
   RESUME_READY_MESSAGE,
 } from "@/lib/resume-parse-messages";
 import { getResumeWorkspaceHints, hasResumeFieldContent } from "@/lib/resume-workspace";
@@ -107,17 +115,30 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
   const [parseReviewOpen, setParseReviewOpen] = useState(false);
   const [pendingParseFields, setPendingParseFields] = useState<StoredResumeInput | null>(null);
   const [pendingParsedAt, setPendingParsedAt] = useState<string | null>(null);
+  const [saveSuccessVisible, setSaveSuccessVisible] = useState(false);
+  const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  function syncFromStorage(): void {
+    const next = readResumeUiSyncState();
+    setResumeFields(next.fields);
+    setUploadedFile(next.upload);
+    setFlowStatus(next.flowStatus);
+    if (next.parsedFileType) {
+      setLastParsedFileType(next.parsedFileType);
+    } else {
+      setLastParsedFileType(undefined);
+    }
+  }
+
   useEffect(() => {
+    if (getAllResumeRecords().length === 0 && getActiveResumeId() === null) {
+      createResume("Primary resume");
+    }
+    syncFromStorage();
+
     const handleExternalSync = () => {
-      const next = readResumeUiSyncState();
-      setResumeFields(next.fields);
-      setUploadedFile(next.upload);
-      setFlowStatus(next.flowStatus);
-      if (next.parsedFileType) {
-        setLastParsedFileType(next.parsedFileType);
-      }
+      syncFromStorage();
     };
     window.addEventListener(RESUME_STORAGE_CHANGED_EVENT, handleExternalSync);
     window.addEventListener("storage", handleExternalSync);
@@ -148,6 +169,7 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
   }
 
   function updateField<K extends keyof StoredResumeInput>(key: K, value: StoredResumeInput[K]): void {
+    setSaveSuccessVisible(false);
     setResumeFields((current) => {
       const next = { ...current, [key]: value };
       if (hasResumeFieldContent(next)) {
@@ -158,24 +180,74 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
     setNotice(null);
   }
 
-  function confirmResumeForAnalysis(): boolean {
-    if (!hasResumeFieldContent(resumeFields)) {
+  function saveResumeForAnalysis(fields: StoredResumeInput): boolean {
+    if (!hasResumeFieldContent(fields)) {
       setNotice("Add your resume below to continue.");
       return false;
     }
 
-    saveStoredResumeInput({
-      summary: resumeFields.summary.trim(),
-      skills: resumeFields.skills.trim(),
-      highlights: resumeFields.highlights.trim(),
-    });
+    const normalized = {
+      summary: fields.summary.trim(),
+      skills: fields.skills.trim(),
+      highlights: fields.highlights.trim(),
+      education: fields.education.trim(),
+    };
+
+    saveStoredResumeInput(normalized);
+    setResumeFields(normalized);
     setFlowStatus("resume_ready");
     setStatusDetail({
       title: null,
       message: RESUME_READY_MESSAGE,
       hint: null,
     });
+    setSaveSuccessVisible(true);
+    setNotice(RESUME_READY_MESSAGE);
     return true;
+  }
+
+  function recordParseFeedback(mode: ResumeParseConfirmMode): void {
+    if (!pendingParsedAt) return;
+    recordResumeParseFeedback({
+      rating: mode === "accepted" ? "up" : "down",
+      parsedAt: pendingParsedAt,
+      fileType: lastParsedFileType,
+      fileName: uploadedFile?.fileName,
+    });
+  }
+
+  function finishParseReview(confirmed: StoredResumeInput, mode: ResumeParseConfirmMode): void {
+    recordParseFeedback(mode);
+    saveResumeForAnalysis(confirmed);
+    setPendingParseFields(null);
+    setPendingParsedAt(null);
+    setParseReviewOpen(false);
+
+    if (mode === "accepted") {
+      router.push("/analyze");
+    }
+  }
+
+  function removeResumeCompletely(): void {
+    const activeId = getActiveResumeId();
+    const records = getAllResumeRecords();
+    if (activeId && records.length > 1) {
+      removeResume(activeId);
+    } else if (activeId) {
+      clearStoredResume();
+    }
+    syncFromStorage();
+    const next = readResumeUiSyncState();
+    setResumeFields(next.fields);
+    setUploadedFile(next.upload);
+    setPendingParseFields(null);
+    setPendingParsedAt(null);
+    setParseReviewOpen(false);
+    setLastParsedFileType(next.parsedFileType);
+    setSaveSuccessVisible(false);
+    setFlowStatus(next.flowStatus);
+    clearStatusDetail();
+    setNotice(records.length > 1 ? "Resume version removed." : "Resume cleared.");
   }
 
   async function handleSelectedFile(file: File): Promise<void> {
@@ -184,7 +256,6 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
       setFlowStatus("unsupported");
       setStatusDetail(unsupported);
       setUploadedFile(null);
-      clearStoredResumeUploadState();
       setNotice(null);
       return;
     }
@@ -234,6 +305,7 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
         summary?: string;
         skills?: string;
         highlights?: string;
+        education?: string;
       } = {};
 
       try {
@@ -260,6 +332,7 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
         summary: payload.summary?.trim() ?? "",
         skills: payload.skills?.trim() ?? "",
         highlights: payload.highlights?.trim() ?? "",
+        education: payload.education?.trim() ?? "",
       };
 
       if (!hasResumeFieldContent(parsedFields)) {
@@ -288,7 +361,7 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
       setFlowStatus("parse_success");
       setStatusDetail({
         title: null,
-        message: "Review the parsed resume before saving.",
+        message: "Review your resume in the popup before continuing.",
         hint: payload.warning?.trim() || null,
       });
     } catch (error) {
@@ -305,21 +378,21 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
     }
   }
 
-  function clearUploadedFile(): void {
-    clearStoredResumeUploadState();
-    setUploadedFile(null);
-    setFlowStatus(hints.isSavedForAnalysis ? "resume_ready" : "idle");
-    clearStatusDetail();
-    setNotice("File removed. Your text below is still here.");
-  }
 
   return (
     <section className="rounded-xl border border-zinc-200/80 bg-white p-5">
       <h2 className="text-sm font-medium text-zinc-900">Your resume</h2>
       <p className="mt-1 text-xs text-zinc-500">
-        Upload a {PARSEABLE_RESUME_LABEL} or paste below. Save when you are ready — that version is used for
-        every job analysis.
+        Upload a {PARSEABLE_RESUME_LABEL} or paste below. Maintain multiple versions and choose which is active for analysis.
       </p>
+
+      <ResumeVersionBar onSwitch={syncFromStorage} />
+
+      {saveSuccessVisible && hints.isSavedForAnalysis && !hints.hasUnsavedEdits ? (
+        <p className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-900">
+          {RESUME_READY_MESSAGE}
+        </p>
+      ) : null}
 
       <ActiveResumeCallout snapshot={snapshot} inAnalysisContext={hints.isSavedForAnalysis} />
 
@@ -393,11 +466,11 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
               type="button"
               onClick={(event) => {
                 event.stopPropagation();
-                clearUploadedFile();
+                setRemoveConfirmOpen(true);
               }}
               className="ml-2 font-medium text-zinc-800 underline-offset-2 hover:underline"
             >
-              Remove
+              Remove resume
             </button>
           </p>
         ) : null}
@@ -455,26 +528,31 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
             className="mt-1.5 min-h-28 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm text-zinc-700"
           />
         </div>
+        <div>
+          <label htmlFor="resume-education" className="block text-sm font-medium text-zinc-900">
+            Education
+          </label>
+          <textarea
+            id="resume-education"
+            value={resumeFields.education}
+            onChange={(event) => updateField("education", event.target.value)}
+            placeholder="One degree or school per line"
+            className="mt-1.5 min-h-20 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm text-zinc-700"
+          />
+        </div>
       </div>
 
       <div className="mt-5 flex flex-wrap items-center gap-3">
-        <button
-          type="button"
-          disabled={isSaving || isBusy}
-          onClick={() => {
-            if (isSaving || isBusy) return;
-            setIsSaving(true);
-            try {
-              if (!confirmResumeForAnalysis()) return;
-              setNotice(null);
-            } finally {
-              setIsSaving(false);
-            }
-          }}
-          className="rounded-lg border border-zinc-200 px-4 py-2 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {isSaving ? "Saving…" : "Save for analysis"}
-        </button>
+        {hasResumeFieldContent(resumeFields) ? (
+          <button
+            type="button"
+            disabled={isBusy}
+            onClick={() => setRemoveConfirmOpen(true)}
+            className="text-sm font-medium text-zinc-500 underline-offset-2 hover:text-zinc-700 hover:underline disabled:opacity-50"
+          >
+            Remove resume
+          </button>
+        ) : null}
         <button
           type="button"
           disabled={isSaving || isBusy || !hasResumeFieldContent(resumeFields)}
@@ -482,7 +560,7 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
             if (isSaving || isBusy) return;
             setIsSaving(true);
             try {
-              if (!confirmResumeForAnalysis()) return;
+              if (!saveResumeForAnalysis(resumeFields)) return;
               router.push("/analyze");
             } finally {
               setIsSaving(false);
@@ -490,40 +568,31 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
           }}
           className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Continue to add a job
+          {isSaving ? "Saving…" : "Save and add a job"}
         </button>
       </div>
 
       <ResumeParseReviewModal
         open={parseReviewOpen}
         draft={pendingParseFields}
-        parsedAt={pendingParsedAt}
-        fileType={lastParsedFileType}
-        fileName={uploadedFile?.fileName ?? null}
-        onConfirm={(confirmed) => {
-          const parsedFileType = lastParsedFileType ?? "pdf";
-          markResumeParsed(confirmed, {
-            fileType: parsedFileType,
-            parsedAt: pendingParsedAt ?? undefined,
-          });
-          setResumeFields(confirmed);
-          setPendingParseFields(null);
-          setPendingParsedAt(null);
-          setParseReviewOpen(false);
-          setFlowStatus("parse_success");
-          setStatusDetail({
-            title: null,
-            message: PARSE_SUCCESS_MESSAGE,
-            hint: null,
-          });
-        }}
+        onConfirm={finishParseReview}
+        onEditStarted={() => recordParseFeedback("corrected")}
         onDismiss={() => {
           setParseReviewOpen(false);
           setPendingParseFields(null);
           setPendingParsedAt(null);
-          setFlowStatus(hints.isSavedForAnalysis ? "resume_ready" : "idle");
+          setFlowStatus("idle");
           clearStatusDetail();
-          setNotice("Import cancelled. Paste or upload again when ready.");
+          setNotice(null);
+        }}
+      />
+
+      <RemoveResumeConfirmDialog
+        open={removeConfirmOpen}
+        onCancel={() => setRemoveConfirmOpen(false)}
+        onConfirm={() => {
+          setRemoveConfirmOpen(false);
+          removeResumeCompletely();
         }}
       />
     </section>

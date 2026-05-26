@@ -8,6 +8,16 @@ export type JobUrlImportDiagnostics = {
   contentType?: string | null;
   fetchedHtmlLength?: number;
   extractedTextLength?: number;
+  boilerplateLinesRemoved?: number;
+  inlineBlocksRemoved?: number;
+  sectionsDetected?: number;
+  metadataFound?: {
+    title?: boolean;
+    company?: boolean;
+    location?: boolean;
+  };
+  extractionQuality?: string;
+  qualityReasons?: string[];
   failureReason?: string;
   urlPageKind?: JobUrlPageKind;
   looksLikeSearchResults?: boolean;

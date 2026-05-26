@@ -64,14 +64,24 @@ export function getFitMeta(fit: FitCategory): FitCategoryMeta {
 export function fitVerdict(fit: FitCategory): string {
   switch (fit) {
     case "Strong Fit":
-      return "You should apply";
+      return "Strong match — worth prioritizing";
     case "Backup Fit":
-      return "Safe option — apply";
+      return "Good overlap — apply if the role fits your goals";
     case "Aspirational Fit":
-      return "Stretch role — apply selectively";
+      return "Stretch role — apply if you can close the gaps below";
     case "Low Fit":
-      return "Low priority for now";
+      return "Limited match — focus on stronger-fit roles first";
   }
+}
+
+/** One-line fit readout for Results (human, not recruiter jargon). */
+export function buildFitSummaryLine(options: {
+  score: number;
+  fit: FitCategory;
+  fitBand: FitBand;
+}): string {
+  const meta = getFitMeta(options.fit);
+  return `${options.fitBand} fit (score ${options.score}). ${meta.description}`;
 }
 
 export function fitColor(fit: FitCategory): string {

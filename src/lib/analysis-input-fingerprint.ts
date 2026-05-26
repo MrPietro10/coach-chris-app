@@ -21,6 +21,9 @@ export function buildAnalysisInputFingerprint(input: {
     highlights: [...input.resumeContext.experienceHighlights]
       .map((item) => item.trim())
       .sort(),
+    education: [...input.resumeContext.educationEntries]
+      .map((item) => item.trim())
+      .sort(),
   };
 
   return hashString(JSON.stringify(normalized));

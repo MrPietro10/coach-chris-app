@@ -144,6 +144,7 @@ export async function POST(request: Request) {
       summaryLength: result.fields.summary.length,
       skillsLength: result.fields.skills.length,
       highlightsLength: result.fields.highlights.length,
+      educationLength: result.fields.education.length,
       hasWarning: Boolean(result.warning),
       runtime: runtimeLabel,
     });
@@ -154,6 +155,7 @@ export async function POST(request: Request) {
       summary: result.fields.summary,
       skills: result.fields.skills,
       highlights: result.fields.highlights,
+      education: result.fields.education,
       rawText: result.fields.rawText,
       warning: result.warning,
       code: "success",

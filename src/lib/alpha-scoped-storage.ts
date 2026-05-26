@@ -4,8 +4,11 @@ export const ALPHA_STORAGE_PREFIX = "coachChris";
 
 export type AlphaScopedStorageResource =
   | "resume"
+  | "resumes"
+  | "active-resume-id"
   | "profile"
   | "jobs"
+  | "removed-jobs"
   | "analyzed-jobs"
   | "analyses"
   | "selected-job"

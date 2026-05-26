@@ -67,7 +67,7 @@ export function JobUrlImportStatus({
       {message ? <p className="mt-1">{message}</p> : null}
       {hint ? <p className="mt-1 opacity-90">{hint}</p> : null}
       {status === "import_success" ? (
-        <p className="mt-1 opacity-90">Review the description below, then compare your resume.</p>
+        <p className="mt-1 opacity-90">Review the description below, then run fit analysis.</p>
       ) : null}
     </div>
   );

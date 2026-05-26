@@ -31,8 +31,11 @@ import { PageHeader } from "@/components/ui/page-header";
 import { getProviderConfig } from "@/lib/ai";
 import {
   getComputedJobAnalysesState,
+  clearAllUserJobs,
+  deleteUserJob,
   getAllStoredJobs,
   getAnalyzedJobsState,
+  getStoredUserJobs,
   getResumeParsedAt,
   getResumeSavedAt,
   getStoredResumeInput,
@@ -42,6 +45,7 @@ import {
   saveStoredResumeDraft,
   saveStoredResumeInput,
   clearPendingAnalysisJobId,
+  clearSelectedJobId,
   getPendingAnalysisJobId,
   markPendingAnalysisJobId,
   setComputedJobAnalysis,
@@ -61,17 +65,17 @@ import {
   profile,
   setStoredJobStatus,
 } from "@/mock-data/career-coach";
+import { JobActiveBadge } from "@/components/jobs/job-active-badge";
 import { AskChrisLink } from "@/components/ui/ask-chris-link";
 import { InlineOptimizeForJob, type GapDrivenInput } from "@/components/optimize/inline-optimize";
 import { logEvent } from "@/lib/alpha-usage-logger";
 import {
-  buildFitPrimaryHeadline,
+  buildFitSummaryLine,
   confidenceToAxisPercent,
   EVIDENCE_STRENGTH_DISCLAIMER,
   explainEvidenceStrengthChange,
   fitColor,
   fitScoreToAxisPercent,
-  fitVerdict,
   formatEvidenceStrengthShort,
   getEncouragingEvidenceInsight,
   getFitBand,
@@ -102,6 +106,46 @@ function getMatrixPosition(
   return {
     x: Math.max(6, Math.min(94, baseX + off.dx)),
     y: Math.max(6, Math.min(94, baseY + off.dy)),
+  };
+}
+
+const PRIMARY_DRIVER_STRENGTH_PATTERN = /^primary driver\b/i;
+const HR_SOFT_GAP_PATTERN = /^experience depth is solid\b/i;
+const TOP_GAP_INJECTED_PATTERN = /^top gap to address\b/i;
+
+function partitionResultsBullets(analysis: JobAnalysis): {
+  alignmentStrengths: string[];
+  resumeGaps: string[];
+  coachesContext: string[];
+} {
+  const movedFromStrengths: string[] = [];
+  const alignmentStrengths: string[] = [];
+
+  for (const item of analysis.strengths) {
+    const trimmed = item.trim();
+    if (!trimmed) continue;
+    if (PRIMARY_DRIVER_STRENGTH_PATTERN.test(trimmed)) {
+      movedFromStrengths.push(
+        trimmed.replace(/^primary driver( to improve)?:\s*/i, "").trim() || trimmed,
+      );
+      continue;
+    }
+    if (HR_SOFT_GAP_PATTERN.test(trimmed)) {
+      movedFromStrengths.push(trimmed);
+      continue;
+    }
+    alignmentStrengths.push(trimmed);
+  }
+
+  const resumeGaps = [
+    ...movedFromStrengths,
+    ...analysis.gaps.map((g) => g.trim()).filter(Boolean),
+  ].filter((gap) => !TOP_GAP_INJECTED_PATTERN.test(gap));
+
+  return {
+    alignmentStrengths,
+    resumeGaps,
+    coachesContext: analysis.hrView.map((h) => h.trim()).filter(Boolean),
   };
 }
 
@@ -139,6 +183,7 @@ function FitMatrix({
       </h3>
       <p className="mt-1 text-xs text-zinc-400">
         Fit strength is vertical (primary). Evidence strength moves left to right and reflects resume proof—not how good you are.
+        Click a dot to switch the active job.
       </p>
 
       <div className="mt-4 flex items-center justify-center">
@@ -205,24 +250,6 @@ function FitMatrix({
         </div>
       </div>
 
-      <div className="mt-4 flex flex-wrap justify-center gap-x-4 gap-y-1 border-t border-zinc-100 pt-3">
-        <span className="flex items-center gap-1.5 text-[11px] text-zinc-500">
-          <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
-          High fit
-        </span>
-        <span className="flex items-center gap-1.5 text-[11px] text-zinc-500">
-          <span className="inline-block h-2 w-2 rounded-full bg-sky-400" />
-          Medium fit
-        </span>
-        <span className="flex items-center gap-1.5 text-[11px] text-zinc-500">
-          <span className="inline-block h-2 w-2 rounded-full bg-rose-400" />
-          Low fit
-        </span>
-        <span className="flex items-center gap-1.5 text-[11px] text-zinc-500">
-          <span className="inline-block h-2 w-2 rounded-full bg-zinc-400" />
-          Left = less resume evidence
-        </span>
-      </div>
     </section>
   );
 }
@@ -337,6 +364,7 @@ function calculateResumeCompleteness(input: {
   summary: string;
   skills: string;
   highlights: string;
+  education: string;
 }): number {
   const hasSummary = input.summary.trim().length > 0 ? 1 : 0;
   const hasSkills =
@@ -353,8 +381,15 @@ function calculateResumeCompleteness(input: {
       .filter((item) => item.length > 0).length > 0
       ? 1
       : 0;
+  const hasEducation =
+    input.education
+      .split("\n")
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0).length > 0
+      ? 1
+      : 0;
 
-  return (hasSummary + hasSkills + hasHighlights) / 3;
+  return (hasSummary + hasSkills + hasHighlights + hasEducation) / 4;
 }
 
 type StructuredGap = {
@@ -419,18 +454,6 @@ function resolveInitialSelectedJobId(
   return availableJobs[0]?.id ?? analyses[0]?.jobId ?? "";
 }
 
-function buildFitSummaryHeadline(options: {
-  score: number;
-  fitBand: ReturnType<typeof getFitBand>;
-  verdict: string;
-}): string {
-  return buildFitPrimaryHeadline({
-    score: options.score,
-    fitBand: options.fitBand,
-    verdict: options.verdict,
-  });
-}
-
 function getProviderUnavailableMessage(payload: AnalyzeSelectedJobOutput): string | null {
   const combined = [
     payload.overallFitSummary,
@@ -481,6 +504,10 @@ export default function ResultsPage() {
       stored.highlights || currentResume.experience.flatMap((item) => item.highlights).join("\n")
     );
   });
+  const [resumeEducationInput, setResumeEducationInput] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return getStoredResumeInput().education;
+  });
   const [copyResumeNotice, setCopyResumeNotice] = useState<string | null>(null);
   const [resumeSavedNotice, setResumeSavedNotice] = useState<string | null>(null);
   const [showInlineOptimize, setShowInlineOptimize] = useState(false);
@@ -495,8 +522,11 @@ export default function ResultsPage() {
   const hasResumeInput =
     resumeSummaryInput.trim().length > 0 ||
     resumeSkillsInput.trim().length > 0 ||
-    resumeHighlightsInput.trim().length > 0;
-  const storedResumeInput = mounted ? getStoredResumeInput() : { summary: "", skills: "", highlights: "" };
+    resumeHighlightsInput.trim().length > 0 ||
+    resumeEducationInput.trim().length > 0;
+  const storedResumeInput = mounted
+    ? getStoredResumeInput()
+    : { summary: "", skills: "", highlights: "", education: "" };
   const resumeUploadState = mounted ? getStoredResumeUploadState() : null;
   const resumeSavedAt = mounted ? getResumeSavedAt() : null;
   const resumeParsedAt = mounted ? getResumeParsedAt() : null;
@@ -506,6 +536,7 @@ export default function ResultsPage() {
       summary: resumeSummaryInput,
       skills: resumeSkillsInput,
       highlights: resumeHighlightsInput,
+      education: resumeEducationInput,
     },
     upload: resumeUploadState,
     savedAt: resumeSavedAt,
@@ -522,16 +553,17 @@ export default function ResultsPage() {
   const hasJobSelected = Boolean(job);
   const optimizeData = job ? optimizeByJob[job.id] : undefined;
   const meta = analysis ? getFitMeta(analysis.fit) : null;
-  const verdict = analysis ? fitVerdict(analysis.fit) : null;
   const fitBand = analysis ? getFitBand(analysis.score) : null;
+  const resultsBullets = analysis ? partitionResultsBullets(analysis) : null;
   const topPriorityNextStep =
     analysis?.suggestedEdits[0]?.trim() ||
-    analysis?.gaps[0] ||
-    "Run analysis after updating one role-relevant proof point.";
+    resultsBullets?.resumeGaps[0] ||
+    "Add one concrete resume example for this role, then re-run analysis.";
   const resumeCompleteness = calculateResumeCompleteness({
     summary: resumeSummaryInput,
     skills: resumeSkillsInput,
     highlights: resumeHighlightsInput,
+    education: resumeEducationInput,
   });
   const confidenceLevel: ConfidenceLevel = getStoredOrInferredConfidence({
     storedConfidence: computedAnalysis?.confidenceLevel,
@@ -568,6 +600,60 @@ export default function ResultsPage() {
     confidence: getConfidenceForMatrixItem(a),
   }));
   const selectedJobIndex = availableJobs.findIndex((jobItem) => jobItem.id === selectedJobId);
+  const userSavedJobCount = mounted ? getStoredUserJobs().length : 0;
+  const showClearSavedJobs = userSavedJobCount > 1;
+
+  function notifySessionDataChanged(): void {
+    window.dispatchEvent(new Event("career-coach:analysis-updated"));
+  }
+
+  function refreshJobsFromStorage(): JobPosting[] {
+    const nextJobs = getAllStoredJobs(jobs);
+    setAvailableJobs(nextJobs);
+    setAnalyzedJobsState(getAnalyzedJobsState());
+    setComputedAnalysesState(getComputedJobAnalysesState());
+    return nextJobs;
+  }
+
+  function selectJobAfterRemoval(removedJobId: string): void {
+    const remaining = refreshJobsFromStorage().filter((jobItem) => jobItem.id !== removedJobId);
+    const nextId = remaining[0]?.id ?? "";
+    if (nextId) {
+      setSelectedJob(nextId);
+    } else {
+      setSelectedJobId("");
+      clearSelectedJobId();
+    }
+  }
+
+  function handleRemoveCurrentJob(): void {
+    if (!job || isGeneratingSingleJobAnalysis) return;
+    const confirmed = window.confirm("Remove this job from your workspace?");
+    if (!confirmed) return;
+    const removedId = job.id;
+    deleteUserJob(removedId);
+    selectJobAfterRemoval(removedId);
+    setSingleJobContextNotice("Job removed from your workspace.");
+  }
+
+  function handleClearSavedJobs(): void {
+    if (userSavedJobCount === 0 || isGeneratingSingleJobAnalysis) return;
+    const confirmed = window.confirm(
+      `Clear all ${userSavedJobCount} saved jobs you added? Demo/sample jobs stay. This cannot be undone.`,
+    );
+    if (!confirmed) return;
+    clearAllUserJobs();
+    notifySessionDataChanged();
+    const remaining = refreshJobsFromStorage();
+    const nextId = remaining[0]?.id ?? "";
+    if (nextId) {
+      setSelectedJob(nextId);
+    } else {
+      setSelectedJobId("");
+      clearSelectedJobId();
+    }
+    setSingleJobContextNotice("Saved jobs cleared.");
+  }
 
   function setSelectedJob(id: string) {
     setSelectedJobId(id);
@@ -578,20 +664,23 @@ export default function ResultsPage() {
     summary: string;
     skills: string;
     highlights: string;
+    education: string;
   }): void {
     saveStoredResumeDraft({
       summary: next.summary.trim(),
       skills: next.skills.trim(),
       highlights: next.highlights.trim(),
+      education: next.education.trim(),
     });
   }
 
   function rehydrateResumeInputsFromStorage(): void {
     const stored = getStoredResumeInput();
-    if (!stored.summary && !stored.skills && !stored.highlights) return;
+    if (!stored.summary && !stored.skills && !stored.highlights && !stored.education) return;
     setResumeSummaryInput(stored.summary);
     setResumeSkillsInput(stored.skills);
     setResumeHighlightsInput(stored.highlights);
+    setResumeEducationInput(stored.education);
   }
 
   useEffect(() => {
@@ -692,13 +781,14 @@ export default function ResultsPage() {
       summary: resumeSummaryInput.trim(),
       skills: resumeSkillsInput.trim(),
       highlights: resumeHighlightsInput.trim(),
+      education: resumeEducationInput.trim(),
     };
-    if (!fields.summary && !fields.skills && !fields.highlights) {
+    if (!fields.summary && !fields.skills && !fields.highlights && !fields.education) {
       return false;
     }
     saveStoredResumeInput(fields);
     return true;
-  }, [resumeHighlightsInput, resumeSkillsInput, resumeSummaryInput]);
+  }, [resumeEducationInput, resumeHighlightsInput, resumeSkillsInput, resumeSummaryInput]);
 
   useEffect(() => {
     if (!isGeneratingSingleJobAnalysis) {
@@ -740,6 +830,13 @@ export default function ResultsPage() {
       .map((bullet) => sanitizeResumeLineForOutput(bullet))
       .filter((bullet) => bullet.length > 0);
     setResumeHighlightsInput(highlights.join("\n"));
+    const educationLines = (doc.education ?? [])
+      .map((entry) => {
+        const parts = [entry.degree, entry.school, entry.dates].filter(Boolean).join(" · ");
+        return sanitizeResumeLineForOutput(parts);
+      })
+      .filter((line) => line.length > 0);
+    setResumeEducationInput(educationLines.join("\n"));
     setCopyResumeNotice(null);
   }, []);
 
@@ -789,6 +886,7 @@ export default function ResultsPage() {
       summary: resumeSummaryInput,
       skills: resumeSkillsInput,
       highlights: resumeHighlightsInput,
+      education: resumeEducationInput,
     });
 
     const requestValidation = validateAnalysisRequest({
@@ -995,6 +1093,7 @@ export default function ResultsPage() {
     job,
     optimizeData,
     resumeCompleteness,
+    resumeEducationInput,
     resumeHighlightsInput,
     resumeSkillsInput,
     resumeSummaryInput,
@@ -1008,6 +1107,7 @@ export default function ResultsPage() {
         summary: resumeSummaryInput,
         skills: resumeSkillsInput,
         highlights: resumeHighlightsInput,
+        education: resumeEducationInput,
       });
       const validation = validateAnalysisRequest({
         jobDescription: job.description,
@@ -1043,6 +1143,7 @@ export default function ResultsPage() {
       hasReadyFitAnalysis,
       job,
       persistInlineResumeFields,
+      resumeEducationInput,
       resumeHighlightsInput,
       resumeSkillsInput,
       resumeSummaryInput,
@@ -1081,6 +1182,7 @@ export default function ResultsPage() {
       summary: resumeSummaryInput,
       skills: resumeSkillsInput,
       highlights: resumeHighlightsInput,
+      education: resumeEducationInput,
     });
     if (!hasAnalysisResumeContext(resumeContext)) return;
     if (autoAnalysisStartedForJobRef.current === selectedJobId) return;
@@ -1093,6 +1195,7 @@ export default function ResultsPage() {
     isGeneratingSingleJobAnalysis,
     job,
     mounted,
+    resumeEducationInput,
     resumeHighlightsInput,
     resumeSkillsInput,
     resumeSummaryInput,
@@ -1121,6 +1224,14 @@ export default function ResultsPage() {
       highlights.length > 0
         ? highlights.map((item) => `- ${item}`).join("\n")
         : "- (none)",
+      "",
+      "EDUCATION",
+      resumeEducationInput
+        .split("\n")
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0)
+        .map((item) => `- ${item}`)
+        .join("\n") || "- (none)",
       "",
     ]
       .filter((line, index, all) => !(line === "" && all[index - 1] === ""))
@@ -1208,123 +1319,142 @@ export default function ResultsPage() {
     }
   }
 
-  function renderNextStepsSection(options: { showPrimaryActions: boolean }) {
-    if (!job) return null;
+  const primaryBtnClass =
+    "inline-flex min-h-10 items-center justify-center rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50";
+  const secondaryBtnClass =
+    "inline-flex min-h-10 items-center justify-center rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50";
 
+  function renderAnalysisActionRow() {
+    if (!job) return null;
     return (
-      <section className="rounded-xl border border-zinc-200/80 bg-white p-5">
-        <h3 className="text-sm font-semibold text-zinc-900">Actions</h3>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => handleAnalyzeAction(hasReadyFitAnalysis)}
+          disabled={isGeneratingSingleJobAnalysis || !hasJobSelected}
+          className={hasReadyFitAnalysis ? secondaryBtnClass : primaryBtnClass}
+        >
+          {isGeneratingSingleJobAnalysis
+            ? "Analyzing…"
+            : hasReadyFitAnalysis
+              ? "Re-run analysis"
+              : "Run analysis"}
+        </button>
+        {analysisFeedbackStatus === "running" ? (
+          <span className="text-xs font-medium text-sky-800">
+            {ANALYSIS_PROGRESS_STEPS[analysisProgressIndex]}
+          </span>
+        ) : null}
+      </div>
+    );
+  }
+
+  function renderImproveResumeActions() {
+    if (!job) return null;
+    return (
+      <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-rose-200/80 pt-4">
+        <button
+          type="button"
+          onClick={() => {
+            logEvent("improve_resume");
+            setShowInlineResumeEditor((open) => !open);
+            if (!showInlineResumeEditor) {
+              requestAnimationFrame(() => {
+                resumeEditorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+              });
+            }
+          }}
+          disabled={isGeneratingSingleJobAnalysis}
+          className={primaryBtnClass}
+        >
+          {showInlineResumeEditor ? "Hide resume editor" : "Improve my resume"}
+        </button>
+        {optimizeData ? (
+          <button
+            type="button"
+            onClick={() => {
+              logEvent("improve_resume");
+              setShowInlineOptimize((open) => !open);
+              if (!showInlineOptimize) {
+                requestAnimationFrame(() => {
+                  optimizeRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                });
+              }
+            }}
+            disabled={isGeneratingSingleJobAnalysis}
+            className={secondaryBtnClass}
+          >
+            {showInlineOptimize ? "Hide optimizer" : "Guided optimizer"}
+          </button>
+        ) : null}
+      </div>
+    );
+  }
+
+  function renderAskChrisAction() {
+    if (!job) return null;
+    return (
+      <div className="mt-4 border-t border-zinc-200 pt-4">
+        <AskChrisLink
+          prompt={
+            analysis
+              ? `Should I apply to ${job.title} at ${job.company}? My fit is ${analysis.fit}. Help me decide based on strengths, gaps, and risks.`
+              : `Should I apply to ${job.title} at ${job.company}?`
+          }
+          className={secondaryBtnClass}
+        >
+          Ask Chris about this role
+        </AskChrisLink>
+      </div>
+    );
+  }
+
+  function renderUtilityActions() {
+    if (!job) return null;
+    return (
+      <section className="rounded-xl border border-zinc-200/80 bg-zinc-50/60 px-5 py-4">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+          Resume &amp; navigation
+        </h3>
         {resumeSavedNotice ? (
           <p className="mt-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
             {resumeSavedNotice}
           </p>
         ) : null}
-        {analysisFeedbackStatus === "running" ? (
-          <p className="mt-2 text-xs font-medium text-sky-800">
-            {ANALYSIS_PROGRESS_STEPS[analysisProgressIndex]}
-          </p>
-        ) : null}
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          {options.showPrimaryActions ? (
-            <>
-              <button
-                type="button"
-                onClick={() => {
-                  logEvent("improve_resume");
-                  setShowInlineResumeEditor((open) => !open);
-                  if (!showInlineResumeEditor) {
-                    requestAnimationFrame(() => {
-                      resumeEditorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-                    });
-                  }
-                }}
-                disabled={isGeneratingSingleJobAnalysis}
-                className="inline-flex min-h-10 items-center justify-center rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {showInlineResumeEditor ? "Hide resume editor" : "Improve my resume"}
-              </button>
-              {optimizeData ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    logEvent("improve_resume");
-                    setShowInlineOptimize((open) => !open);
-                    if (!showInlineOptimize) {
-                      requestAnimationFrame(() => {
-                        optimizeRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-                      });
-                    }
-                  }}
-                  disabled={isGeneratingSingleJobAnalysis}
-                  className="inline-flex min-h-10 items-center justify-center rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {showInlineOptimize ? "Hide optimizer" : "Guided optimizer"}
-                </button>
-              ) : null}
-              <AskChrisLink
-                prompt={
-                  analysis
-                    ? `Should I apply to ${job.title} at ${job.company}? My fit is ${analysis.fit}. Help me decide based on strengths and gaps.`
-                    : `Should I apply to ${job.title} at ${job.company}?`
-                }
-                className="inline-flex min-h-10 items-center justify-center rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-100"
-              >
-                Ask Chris
-              </AskChrisLink>
-              <button
-                type="button"
-                onClick={() => handleAnalyzeAction(hasReadyFitAnalysis)}
-                disabled={isGeneratingSingleJobAnalysis || !hasJobSelected}
-                className="inline-flex min-h-10 items-center justify-center rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {isGeneratingSingleJobAnalysis
-                  ? "Analyzing…"
-                  : hasReadyFitAnalysis
-                    ? "Re-run analysis"
-                    : "Run analysis"}
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              onClick={() => handleAnalyzeAction(false)}
-              disabled={isGeneratingSingleJobAnalysis || !hasJobSelected}
-              className="inline-flex min-h-10 items-center justify-center rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {isGeneratingSingleJobAnalysis ? "Analyzing…" : "Run analysis"}
-            </button>
-          )}
-        </div>
-        <p className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500">
+        <p className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
           <button
             type="button"
             onClick={() => router.push("/batch")}
             disabled={isGeneratingSingleJobAnalysis}
-            className="font-medium text-zinc-600 underline-offset-2 hover:text-zinc-900 hover:underline disabled:opacity-50"
+            className="font-medium text-zinc-700 underline-offset-2 hover:text-zinc-900 hover:underline disabled:opacity-50"
           >
             Back to jobs
           </button>
-          <span aria-hidden>·</span>
+          <span className="text-zinc-300" aria-hidden>
+            ·
+          </span>
           <button
             type="button"
             onClick={() => void exportResumeDocx()}
             disabled={isGeneratingSingleJobAnalysis}
-            className="font-medium text-zinc-600 underline-offset-2 hover:text-zinc-900 hover:underline disabled:opacity-50"
+            className="font-medium text-zinc-700 underline-offset-2 hover:text-zinc-900 hover:underline disabled:opacity-50"
           >
             Export resume
           </button>
-          <span aria-hidden>·</span>
+          <span className="text-zinc-300" aria-hidden>
+            ·
+          </span>
           <button
             type="button"
             onClick={() => void copyResumeText()}
             disabled={isGeneratingSingleJobAnalysis}
-            className="font-medium text-zinc-600 underline-offset-2 hover:text-zinc-900 hover:underline disabled:opacity-50"
+            className="font-medium text-zinc-700 underline-offset-2 hover:text-zinc-900 hover:underline disabled:opacity-50"
           >
             Copy resume
           </button>
         </p>
         {copyResumeNotice ? <p className="mt-1 text-xs text-zinc-600">{copyResumeNotice}</p> : null}
-        {!hasResumeInput && !options.showPrimaryActions ? (
+        {!hasResumeInput ? (
           <p className="mt-2 text-xs text-zinc-500">Add your resume on the Resume page to begin.</p>
         ) : null}
         {singleJobContextNotice ? (
@@ -1357,22 +1487,65 @@ export default function ResultsPage() {
       />
 
       <div className="space-y-6">
-        {/* ── 0. Application Summary Matrix ── */}
-        <FitMatrix
-          items={matrixItems}
-          selectedJobId={selectedJobId}
-          onSelect={setSelectedJob}
-          selectionDisabled={isGeneratingSingleJobAnalysis}
-        />
         {job && (
           <section className="rounded-xl border border-zinc-200/80 bg-white p-4">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div className="min-w-0 flex-1">
-                <p className="text-xs text-zinc-400">Selected job</p>
-                <p className="truncate text-sm font-medium text-zinc-900">
-                  {job.title} · {job.company}
+                <div className="flex flex-wrap items-center gap-2">
+                  <JobActiveBadge variant="active" />
+                  {(isGeneratingSingleJobAnalysis ||
+                    getPendingAnalysisJobId() === selectedJobId) && (
+                    <JobActiveBadge variant="analyzing" />
+                  )}
+                  {availableJobs.length > 1 ? (
+                    <span className="text-xs text-zinc-500">
+                      {selectedJobIndex + 1} of {availableJobs.length} saved roles
+                    </span>
+                  ) : null}
+                </div>
+                <h2 className="mt-2 truncate text-base font-semibold text-zinc-900">{job.title}</h2>
+                <p className="mt-0.5 text-sm text-zinc-600">
+                  {job.company}
+                  {job.location ? ` · ${job.location}` : ""}
                 </p>
-                <div className="mt-3 flex items-center gap-2">
+                <p className="mt-2 text-xs leading-relaxed text-zinc-500">
+                  Switch roles using Previous/Next, the fit matrix, or{" "}
+                  <button
+                    type="button"
+                    onClick={() => router.push("/batch")}
+                    className="font-medium text-zinc-700 underline-offset-2 hover:underline"
+                  >
+                    Saved jobs
+                  </button>
+                  . Start a new role with Analyze new job.
+                </p>
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => router.push("/analyze")}
+                    disabled={isGeneratingSingleJobAnalysis}
+                    className={primaryBtnClass}
+                  >
+                    Analyze new job
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleRemoveCurrentJob}
+                    disabled={isGeneratingSingleJobAnalysis}
+                    className={secondaryBtnClass}
+                  >
+                    Remove this job
+                  </button>
+                  {showClearSavedJobs ? (
+                    <button
+                      type="button"
+                      onClick={handleClearSavedJobs}
+                      disabled={isGeneratingSingleJobAnalysis}
+                      className="inline-flex min-h-10 items-center justify-center rounded-lg border border-rose-200 bg-rose-50/80 px-4 py-2 text-sm font-medium text-rose-900 transition-colors hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Clear saved jobs
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     onClick={() => {
@@ -1382,7 +1555,7 @@ export default function ResultsPage() {
                     disabled={selectedJobIndex <= 0 || isGeneratingSingleJobAnalysis}
                     className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    Previous
+                    Previous job
                   </button>
                   <button
                     type="button"
@@ -1397,7 +1570,7 @@ export default function ResultsPage() {
                     }
                     className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    Next
+                    Next job
                   </button>
                 </div>
               </div>
@@ -1423,9 +1596,40 @@ export default function ResultsPage() {
               : "This saved job is not in the matrix yet. Run analysis to place it."}
           </p>
         )}
-        {analysis && job && meta && verdict ? (
+        {matrixItems.length > 0 ? (
+          <div className="space-y-3">
+            <FitMatrix
+              items={matrixItems}
+              selectedJobId={selectedJobId}
+              onSelect={setSelectedJob}
+              selectionDisabled={isGeneratingSingleJobAnalysis}
+            />
+            {renderAnalysisActionRow()}
+          </div>
+        ) : job ? (
+          <section className="rounded-xl border border-zinc-200/80 bg-white px-5 py-4">
+            <h3 className="text-sm font-medium text-zinc-900">Application summary</h3>
+            <p className="mt-1 text-sm text-zinc-600">
+              Run analysis to place this role on the fit chart alongside your other jobs.
+            </p>
+            <div className="mt-3">{renderAnalysisActionRow()}</div>
+          </section>
+        ) : null}
+        {analysis && job && meta && fitBand && resultsBullets ? (
           <div ref={fitResultsRef} id="job-fit-results" className="scroll-mt-24 space-y-6">
-            {/* Compact fit context — score supports the story, not the headline */}
+            <section className="rounded-xl border-2 border-amber-200 bg-amber-50/90 px-6 py-6 shadow-sm">
+              <h2 className="text-xs font-bold uppercase tracking-wider text-amber-900">
+                Top priority next step
+              </h2>
+              <p className="mt-1.5 text-sm text-amber-900/90">
+                Your best next move for this role—start here, then review the fit details below.
+              </p>
+              <p className="mt-3 text-lg font-semibold leading-snug text-zinc-900">
+                {topPriorityNextStep}
+              </p>
+            </section>
+
+            {/* Fit summary — score supports the story, not the headline */}
             <section className="rounded-xl border border-zinc-200/80 bg-white px-5 py-4">
               <div className="flex flex-wrap items-start gap-4">
                 <CompactFitMeter score={analysis.score} fit={analysis.fit} />
@@ -1455,11 +1659,13 @@ export default function ResultsPage() {
                       {formatEvidenceStrengthShort(confidenceLevel)}
                     </span>
                   </div>
-                  {fitBand && verdict ? (
-                    <p className="mt-2 text-sm leading-relaxed text-zinc-600">
-                      {buildFitSummaryHeadline({ score: analysis.score, fitBand, verdict })}
-                    </p>
-                  ) : null}
+                  <p className="mt-2 text-sm leading-relaxed text-zinc-600">
+                    {buildFitSummaryLine({
+                      score: analysis.score,
+                      fit: analysis.fit,
+                      fitBand,
+                    })}
+                  </p>
                   {encouragingEvidenceInsight ? (
                     <p className="mt-2 text-sm text-sky-900">{encouragingEvidenceInsight}</p>
                   ) : null}
@@ -1467,86 +1673,90 @@ export default function ResultsPage() {
               </div>
             </section>
 
-            {/* Primary insight */}
-            <section className="rounded-xl border-2 border-amber-200 bg-amber-50/90 px-6 py-6 shadow-sm">
-              <h2 className="text-xs font-bold uppercase tracking-wider text-amber-900">
-                Top priority next step
-              </h2>
-              <p className="mt-3 text-lg font-semibold leading-snug text-zinc-900">
-                {topPriorityNextStep}
-              </p>
+            <section className="rounded-xl border border-emerald-200 bg-emerald-50/50 px-6 py-6">
+              <h2 className="text-base font-bold text-emerald-950">Why this fits</h2>
+              {resultsBullets.alignmentStrengths.length > 0 ? (
+                <>
+                  <p className="mt-1.5 text-sm text-emerald-900/80">
+                    Highlights backed by your resume.
+                  </p>
+                  <ul className="mt-4 space-y-3">
+                    {resultsBullets.alignmentStrengths.map((strength) => (
+                      <li
+                        key={strength}
+                        className="flex items-start gap-3 text-sm leading-relaxed text-zinc-800"
+                      >
+                        <span
+                          className="mt-2 h-2 w-2 shrink-0 rounded-full bg-emerald-500"
+                          aria-hidden
+                        />
+                        {strength}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <p className="mt-3 text-sm text-emerald-900/90">
+                  No strong alignment signals yet—add clearer resume proof for this role.
+                </p>
+              )}
             </section>
 
-            <div className="grid gap-6 lg:grid-cols-2">
-              {/* Why This Fits */}
-              <section className="rounded-xl border border-emerald-200 bg-emerald-50/50 px-6 py-6">
-                <h2 className="text-base font-bold text-emerald-950">Why this fits</h2>
-                <p className="mt-1.5 text-sm text-emerald-900/80">
-                  Strongest alignments between your resume and this role.
-                </p>
-                <p className="mt-3 text-[11px] font-medium text-emerald-800">
-                  <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-emerald-500 align-middle" />
-                  Green bullets = evidence already on your resume
-                </p>
+            <section className="rounded-xl border border-rose-200 bg-rose-50/50 px-6 py-6">
+              <h2 className="text-base font-bold text-rose-950">Key gaps</h2>
+              <p className="mt-1.5 text-sm text-rose-900/80">
+                Actionable resume improvements to tackle before you apply.
+              </p>
+              {resultsBullets.resumeGaps.length > 0 ? (
                 <ul className="mt-4 space-y-3">
-                  {analysis.strengths.map((s) => (
-                    <li key={s} className="flex items-start gap-3 text-sm leading-relaxed text-zinc-800">
+                  {resultsBullets.resumeGaps.map((g) => (
+                    <li
+                      key={g}
+                      className="flex items-start gap-3 text-sm leading-relaxed text-zinc-800"
+                    >
                       <span
-                        className="mt-2 h-2 w-2 shrink-0 rounded-full bg-emerald-500"
+                        className="mt-2 h-2 w-2 shrink-0 rounded-full bg-rose-500"
                         aria-hidden
                       />
-                      {s}
-                    </li>
-                  ))}
-                </ul>
-              </section>
-
-              {/* Key Gaps */}
-              <section className="rounded-xl border border-rose-200 bg-rose-50/50 px-6 py-6">
-                <h2 className="text-base font-bold text-rose-950">Key gaps</h2>
-                <p className="mt-1.5 text-sm text-rose-900/80">
-                  What to strengthen on your resume before you apply.
-                </p>
-                <div className="mt-4 space-y-2 rounded-lg border border-rose-100 bg-white/60 px-3 py-2.5 text-[11px] text-zinc-600">
-                  <p className="flex items-start gap-2">
-                    <span
-                      className="mt-1 h-2 w-2 shrink-0 rounded-full bg-rose-500"
-                      aria-hidden
-                    />
-                    <span>
-                      <strong className="font-semibold text-rose-900">Rose bullets</strong> — resume
-                      gaps to fix first
-                    </span>
-                  </p>
-                  <p className="flex items-start gap-2">
-                    <span
-                      className="mt-1 h-2 w-2 shrink-0 rounded-full bg-zinc-400"
-                      aria-hidden
-                    />
-                    <span>
-                      <strong className="font-semibold text-zinc-700">Gray bullets</strong> — how a
-                      recruiter might read risk (context only)
-                    </span>
-                  </p>
-                </div>
-                <ul className="mt-4 space-y-3">
-                  {analysis.gaps.map((g) => (
-                    <li key={g} className="flex items-start gap-3 text-sm leading-relaxed text-zinc-800">
-                      <span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-rose-500" aria-hidden />
                       {highlightMetricPlaceholders(g)}
                     </li>
                   ))}
-                  {analysis.hrView.map((h) => (
-                    <li key={h} className="flex items-start gap-3 text-sm leading-relaxed text-zinc-600">
-                      <span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-zinc-400" aria-hidden />
-                      {h}
+                </ul>
+              ) : (
+                <p className="mt-4 text-sm text-rose-900/90">
+                  No major resume gaps flagged—still worth a quick proofread before you apply.
+                </p>
+              )}
+              {renderImproveResumeActions()}
+            </section>
+
+            <section className="rounded-xl border border-zinc-200 bg-zinc-50/80 px-6 py-6">
+              <h2 className="text-base font-bold text-zinc-900">Coach&apos;s context</h2>
+              <p className="mt-1.5 text-sm text-zinc-600">
+                Strategic interpretation, hiring risks, and application context beyond resume edits.
+              </p>
+              {resultsBullets.coachesContext.length > 0 ? (
+                <ul className="mt-4 space-y-3">
+                  {resultsBullets.coachesContext.map((item) => (
+                    <li
+                      key={item}
+                      className="flex items-start gap-3 text-sm leading-relaxed text-zinc-700"
+                    >
+                      <span
+                        className="mt-2 h-2 w-2 shrink-0 rounded-full bg-zinc-400"
+                        aria-hidden
+                      />
+                      {item}
                     </li>
                   ))}
                 </ul>
-              </section>
-            </div>
-
-            {renderNextStepsSection({ showPrimaryActions: true })}
+              ) : (
+                <p className="mt-4 text-sm text-zinc-600">
+                  No extra strategic context flagged for this role.
+                </p>
+              )}
+              {renderAskChrisAction()}
+            </section>
 
             {showInlineResumeEditor && (
               <section
@@ -1555,7 +1765,7 @@ export default function ResultsPage() {
               >
                 <h3 className="text-base font-semibold text-zinc-900">Improve My Resume</h3>
                 <p className="mt-1 text-sm text-zinc-600">
-                  Strengthen proof points for this role, then re-run analysis from Actions above.
+                  Strengthen proof points for this role, then re-run analysis near Application summary.
                 </p>
                 <p className="mt-1 text-xs text-zinc-500">
                   Editing for:{" "}
@@ -1579,6 +1789,7 @@ export default function ResultsPage() {
                           summary: value,
                           skills: resumeSkillsInput,
                           highlights: resumeHighlightsInput,
+                          education: resumeEducationInput,
                         });
                         setCopyResumeNotice(null);
                         setResumeSavedNotice(null);
@@ -1603,6 +1814,7 @@ export default function ResultsPage() {
                           summary: resumeSummaryInput,
                           skills: value,
                           highlights: resumeHighlightsInput,
+                          education: resumeEducationInput,
                         });
                         setCopyResumeNotice(null);
                         setResumeSavedNotice(null);
@@ -1626,12 +1838,37 @@ export default function ResultsPage() {
                           summary: resumeSummaryInput,
                           skills: resumeSkillsInput,
                           highlights: value,
+                          education: resumeEducationInput,
                         });
                         setCopyResumeNotice(null);
                         setResumeSavedNotice(null);
                       }}
                       placeholder="Add measurable outcomes and role-specific impact"
                       className="mt-1.5 min-h-32 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm text-zinc-700"
+                    />
+                  </div>
+
+                  <div>
+                    <label htmlFor="resume-education-input" className="text-xs font-medium text-zinc-700">
+                      Education (one entry per line)
+                    </label>
+                    <textarea
+                      id="resume-education-input"
+                      value={resumeEducationInput}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setResumeEducationInput(value);
+                        persistInlineResumeDraft({
+                          summary: resumeSummaryInput,
+                          skills: resumeSkillsInput,
+                          highlights: resumeHighlightsInput,
+                          education: value,
+                        });
+                        setCopyResumeNotice(null);
+                        setResumeSavedNotice(null);
+                      }}
+                      placeholder="Degree, school, and dates on separate lines"
+                      className="mt-1.5 min-h-24 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm text-zinc-700"
                     />
                   </div>
                 </div>
@@ -1674,20 +1911,20 @@ export default function ResultsPage() {
                 ))}
               </ul>
             )}
-            <p className="mt-3 text-xs text-zinc-500">
-              Run analysis below to get a fit score, evidence strength, and gaps for this role.
-            </p>
+            {matrixItems.length === 0 ? (
+              <div className="mt-4">{renderAnalysisActionRow()}</div>
+            ) : null}
           </section>
         ) : (
           <section className="rounded-xl border border-zinc-200/80 bg-white p-5">
             <h3 className="text-sm font-medium text-zinc-900">Selected job required</h3>
             <p className="mt-1 text-sm text-zinc-600">
-              Select one job from the summary above to view details and run single-job analysis.
+              Select a saved job to view details and run analysis.
             </p>
           </section>
         )}
 
-        {job && !hasReadyFitAnalysis ? renderNextStepsSection({ showPrimaryActions: false }) : null}
+        {job ? renderUtilityActions() : null}
 
         {/* ── Inline Optimize (guided metrics + preview) ── */}
         {optimizeData && (

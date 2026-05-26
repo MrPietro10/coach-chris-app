@@ -19,7 +19,7 @@ export default function ResumePage() {
       <CoachChrisIntro variant="full" activeStep={1} />
       <PageHeader
         title="Step 1: Your resume"
-        subtitle="Add your resume once. Coach Chris uses your saved version for every job fit analysis."
+        subtitle="Maintain resume versions for different roles. The active resume is used for job fit analysis."
       />
       <ResumeWorkspace onNotice={setNotice} />
       {notice ? (

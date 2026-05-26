@@ -1,24 +1,18 @@
 import {
   getResumePersistenceState,
+  getResumeWorkspaceSnapshot,
   getStoredResumeInput,
   getStoredResumeUploadState,
   type StoredResumeInput,
   type StoredResumeUploadState,
-} from "@/lib/job-session-store";
+} from "@/lib/resume-store";
 import { getResumeWorkspaceHints, type ResumeWorkspaceSnapshot } from "@/lib/resume-workspace";
 import type { ResumeParseFlowStatus } from "@/lib/resume-upload";
 
 export function buildResumeWorkspaceSnapshotFromInput(
   draft: StoredResumeInput,
 ): ResumeWorkspaceSnapshot {
-  const persistence = getResumePersistenceState();
-  return {
-    stored: persistence.input,
-    draft,
-    upload: persistence.upload,
-    savedAt: persistence.savedAt,
-    parsedAt: persistence.parsedAt,
-  };
+  return getResumeWorkspaceSnapshot(draft);
 }
 
 export function deriveResumeFlowStatus(draft?: StoredResumeInput): ResumeParseFlowStatus {

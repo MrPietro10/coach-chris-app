@@ -31,9 +31,12 @@ export function ActiveResumeCallout({
     >
       <p className="font-semibold">
         {isActive
-          ? "This is the active resume used for job analysis"
-          : "This resume is not active for analysis yet"}
+          ? "Active resume for this analysis."
+          : "This resume is not saved for analysis yet."}
       </p>
+      {snapshot.activeResumeName ? (
+        <p className="mt-0.5 text-[11px] font-medium opacity-90">{snapshot.activeResumeName}</p>
+      ) : null}
       {hints.previewText ? (
         <p className="mt-1 text-[11px] opacity-90">{hints.previewText}</p>
       ) : null}
@@ -45,7 +48,7 @@ export function ActiveResumeCallout({
       ) : null}
       {hints.needsParseReview ? (
         <p className="mt-1">
-          Parsed content needs a save.{" "}
+          New resume needs confirmation before analysis.{" "}
           <Link href="/resume" className="font-medium underline-offset-2 hover:underline">
             Review on Resume
           </Link>

@@ -47,9 +47,9 @@ export function ResumeWorkspaceStatus({
       ) : null}
       {hints.needsParseReview ? (
         <p className="mt-1 text-amber-800">
-          Parsed resume not saved yet.{" "}
+          New resume needs confirmation before analysis.{" "}
           <Link href="/resume" className="font-medium underline-offset-2 hover:underline">
-            Review and save
+            Review on Resume
           </Link>
         </p>
       ) : null}

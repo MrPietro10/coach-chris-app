@@ -9,13 +9,9 @@ import {
 import { JobUrlImport } from "@/components/analyze/job-url-import";
 import { CoachChrisIntro } from "@/components/onboarding/coach-chris-intro";
 import { PageHeader } from "@/components/ui/page-header";
-import { cleanupImportedJobDescription, parseSuggestedJobTitle } from "@/lib/job-import-cleanup";
-import {
-  buildSessionJobId,
-  markPendingAnalysisJobId,
-  saveUserJob,
-  setSelectedJobId,
-} from "@/lib/job-session-store";
+import { parseSuggestedJobTitle } from "@/lib/job-import-cleanup";
+import { setActiveJob } from "@/lib/active-job";
+import { buildSessionJobId, saveUserJob } from "@/lib/job-session-store";
 import { logEvent } from "@/lib/alpha-usage-logger";
 
 export default function AnalyzePage() {
@@ -30,6 +26,7 @@ export default function AnalyzePage() {
   const [descriptionSource, setDescriptionSource] = useState<"manual" | "imported_url">("manual");
   const [importReviewOpen, setImportReviewOpen] = useState(false);
   const [pendingImport, setPendingImport] = useState<ImportedJobDraft | null>(null);
+  const [sourceUrl, setSourceUrl] = useState<string | undefined>(undefined);
 
   function applyImportedJob(draft: ImportedJobDraft): void {
     setTitleInput(draft.title);
@@ -37,7 +34,8 @@ export default function AnalyzePage() {
     setLocationInput(draft.location);
     setDescriptionInput(draft.description);
     setDescriptionSource("imported_url");
-    setMessage("Job imported. Review the fields below, then compare your resume when ready.");
+    setSourceUrl(draft.sourceUrl);
+    setMessage("Job imported. Review the fields below, then run fit analysis when ready.");
     setImportReviewOpen(false);
     setPendingImport(null);
     manualSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -46,17 +44,22 @@ export default function AnalyzePage() {
   function handleImportedFromUrl(payload: {
     description: string;
     suggestedTitle: string | null;
+    company: string | null;
+    location: string | null;
+    extractionQuality: "good" | "fair" | "weak";
+    reviewHint: string | null;
     sourceUrl: string;
   }): void {
-    const cleanedDescription = cleanupImportedJobDescription(payload.description);
     const parsed = parseSuggestedJobTitle(payload.suggestedTitle);
     setPendingImport({
-      title: parsed.title,
-      company: parsed.company,
-      location: "",
-      description: cleanedDescription,
+      title: parsed.title || payload.suggestedTitle?.trim() || "",
+      company: payload.company?.trim() || parsed.company,
+      location: payload.location?.trim() || "",
+      description: payload.description,
       sourceUrl: payload.sourceUrl,
       importedAt: new Date().toISOString(),
+      extractionQuality: payload.extractionQuality,
+      reviewHint: payload.reviewHint,
     });
     setImportReviewOpen(true);
     setMessage(null);
@@ -76,17 +79,20 @@ export default function AnalyzePage() {
     const cleanLocation = locationInput.trim();
     const jobId = buildSessionJobId();
 
-    saveUserJob({
-      id: jobId,
-      title: cleanTitle,
-      company: cleanCompany,
-      location: cleanLocation,
-      source: descriptionSource === "imported_url" ? "pasted_url" : "pasted_text",
-      description: descriptionInput.trim(),
-      requiredSkills: [],
-    });
-    setSelectedJobId(jobId);
-    markPendingAnalysisJobId(jobId);
+    saveUserJob(
+      {
+        id: jobId,
+        title: cleanTitle,
+        company: cleanCompany,
+        location: cleanLocation,
+        source: descriptionSource === "imported_url" ? "pasted_url" : "pasted_text",
+        description: descriptionInput.trim(),
+        requiredSkills: [],
+        jobUrl: sourceUrl,
+      },
+      { sourceUrl },
+    );
+    setActiveJob(jobId, { analyzeOnOpen: true });
     logEvent("add_job", { jobTitle: cleanTitle });
     setMessage(`Saved "${cleanTitle}". Opening analysis...`);
     router.push("/results");
@@ -97,7 +103,7 @@ export default function AnalyzePage() {
       <CoachChrisIntro variant="compact" activeStep={2} />
       <PageHeader
         title="Add a job"
-        subtitle="Import from a link or paste the description manually. Coach Chris will compare your resume to this role."
+        subtitle="Import from a link or paste the description manually, then analyze how your resume fits this role."
       />
 
       <div className="space-y-4">
@@ -166,7 +172,7 @@ export default function AnalyzePage() {
             disabled={isSaving}
             className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {isSaving ? "Saving job..." : "Compare resume to this job"}
+            {isSaving ? "Saving job..." : "Save and run fit analysis"}
           </button>
         </div>
       </div>

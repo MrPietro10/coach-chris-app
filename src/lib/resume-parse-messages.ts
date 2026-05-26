@@ -73,13 +73,13 @@ export function getUserFacingParseError(
 }
 
 export const PARSE_SUCCESS_MESSAGE =
-  "Resume parsed successfully. Review and edit before analysis.";
+  "Resume ready — this version is saved for job analysis.";
 
 export const PARSE_PARTIAL_WARNING =
   "We extracted text from your file, but formatting may need cleanup. Review the fields below before saving.";
 
 export const RESUME_READY_MESSAGE =
-  "Resume saved — this version is active for job analysis.";
+  "Resume saved. You can add a job next.";
 
 export const PARSE_REVIEW_NOT_SAVED_MESSAGE =
   "Parsed resume loaded below. Save for analysis when you are ready — analysis uses your saved version, not the raw upload.";

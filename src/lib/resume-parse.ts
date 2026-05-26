@@ -16,6 +16,7 @@ export type ParsedResumeFields = {
   summary: string;
   skills: string;
   highlights: string;
+  education: string;
   rawText: string;
 };
 
@@ -108,7 +109,7 @@ export function countMeaningfulCharacters(text: string): number {
 
 const MIN_MEANINGFUL_CHARACTERS = 24;
 
-type ResumeSectionKey = "summary" | "skills" | "highlights";
+type ResumeSectionKey = "summary" | "skills" | "highlights" | "education";
 
 const SKILLS_SECTION_PATTERNS = [
   /^(core\s+)?skills?\b/i,
@@ -142,6 +143,14 @@ const SUMMARY_SECTION_PATTERNS = [
   /^objective\b/i,
 ];
 
+const EDUCATION_SECTION_PATTERNS = [
+  /^education\b/i,
+  /^academic\s+background\b/i,
+  /^academics\b/i,
+  /^qualifications\b/i,
+  /^degrees?\b/i,
+];
+
 const MAX_SECTION_HEADER_LENGTH = 80;
 
 function isLikelySectionHeader(line: string): boolean {
@@ -152,6 +161,7 @@ function detectResumeSectionHeader(line: string): ResumeSectionKey | null {
   if (!isLikelySectionHeader(line)) return null;
   if (SKILLS_SECTION_PATTERNS.some((pattern) => pattern.test(line))) return "skills";
   if (EXPERIENCE_SECTION_PATTERNS.some((pattern) => pattern.test(line))) return "highlights";
+  if (EDUCATION_SECTION_PATTERNS.some((pattern) => pattern.test(line))) return "education";
   if (SUMMARY_SECTION_PATTERNS.some((pattern) => pattern.test(line))) return "summary";
   return null;
 }
@@ -159,7 +169,7 @@ function detectResumeSectionHeader(line: string): ResumeSectionKey | null {
 function mapResumeTextToFields(rawText: string): ParsedResumeFields {
   const normalized = normalizeExtractedText(rawText);
   if (!normalized) {
-    return { summary: "", skills: "", highlights: "", rawText: "" };
+    return { summary: "", skills: "", highlights: "", education: "", rawText: "" };
   }
 
   const lines = normalized.split("\n");
@@ -167,6 +177,7 @@ function mapResumeTextToFields(rawText: string): ParsedResumeFields {
     summary: [],
     skills: [],
     highlights: [],
+    education: [],
   };
   let current: ResumeSectionKey = "summary";
 
@@ -195,6 +206,7 @@ function mapResumeTextToFields(rawText: string): ParsedResumeFields {
   let summary = joinSection(sections.summary);
   let skills = joinSection(sections.skills);
   let highlights = joinSection(sections.highlights);
+  let education = joinSection(sections.education);
 
   if (!skills && !highlights) {
     summary = normalized;
@@ -220,7 +232,15 @@ function mapResumeTextToFields(rawText: string): ParsedResumeFields {
       .join("\n");
   }
 
-  return { summary, skills, highlights, rawText: normalized };
+  if (education) {
+    education = education
+      .split("\n")
+      .map((item) => item.replace(/^[-•*]\s*/, "").trim())
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  return { summary, skills, highlights, education, rawText: normalized };
 }
 
 function toParseableBinary(buffer: Buffer): Uint8Array {
@@ -371,7 +391,8 @@ export async function parseResumeBuffer(
     const hasMappedContent =
       fields.summary.trim().length > 0 ||
       fields.skills.trim().length > 0 ||
-      fields.highlights.trim().length > 0;
+      fields.highlights.trim().length > 0 ||
+      fields.education.trim().length > 0;
 
     if (!hasMappedContent) {
       fields.summary = normalized;

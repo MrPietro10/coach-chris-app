@@ -31,8 +31,13 @@ export type JobUrlImportSuccess = {
   ok: true;
   description: string;
   suggestedTitle: string | null;
+  company: string | null;
+  location: string | null;
+  extractionQuality: "good" | "fair" | "weak";
+  reviewHint: string | null;
   sourceUrl: string;
   provider: JobUrlImportProvider;
+  importDiagnostics?: JobUrlImportDiagnostics;
 };
 
 export type JobUrlImportFailure = {
@@ -149,12 +154,35 @@ async function importJobDescriptionViaFetchHtml(
     );
   }
 
+  const includeDiagnostics = process.env.NODE_ENV !== "production";
+
   return {
     ok: true,
     description: extracted.description,
     suggestedTitle: extracted.suggestedTitle,
+    company: extracted.company,
+    location: extracted.location,
+    extractionQuality: extracted.extractionQuality,
+    reviewHint: extracted.reviewHint,
     sourceUrl: fetched.finalUrl,
     provider: "fetch-html",
+    ...(includeDiagnostics
+      ? {
+          importDiagnostics: {
+            urlHost: validated.hostname,
+            httpStatus: fetched.httpStatus,
+            contentType: fetched.contentType,
+            fetchedHtmlLength: fetched.html.length,
+            extractedTextLength: extracted.importDiagnostics.extractedTextLength,
+            boilerplateLinesRemoved: extracted.importDiagnostics.boilerplateLinesRemoved,
+            inlineBlocksRemoved: extracted.importDiagnostics.inlineBlocksRemoved,
+            sectionsDetected: extracted.importDiagnostics.sectionsDetected,
+            metadataFound: extracted.importDiagnostics.metadataFound,
+            extractionQuality: extracted.extractionQuality,
+            qualityReasons: extracted.importDiagnostics.qualityReasons,
+          },
+        }
+      : {}),
   };
 }
 
