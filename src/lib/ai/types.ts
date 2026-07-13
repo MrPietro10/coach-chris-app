@@ -112,6 +112,47 @@ export type OptimizeResumeOutput = {
   notes: string[];
 };
 
+export type GenerateTailoredResumeDraftInput = {
+  selectedJob: {
+    jobId: string;
+    title: string;
+    company: string;
+    location?: string;
+    description: string;
+    requiredSkills: string[];
+  };
+  resumeContext: {
+    summary: string;
+    skills: string[];
+    experienceHighlights: string[];
+    educationEntries: string[];
+  };
+  analysisContext: {
+    fit: string;
+    score: number;
+    fitSummary: string;
+    topStrengths: string[];
+    topGaps: string[];
+    highestPriorityImprovement: string;
+    missingEvidence: string[];
+    riskAreas: string[];
+  };
+  sourceResume?: {
+    id: string;
+    name: string;
+  };
+  behaviorContext?: ChrisBehaviorContext;
+};
+
+export type GenerateTailoredResumeDraftOutput = {
+  provider: AIProviderId;
+  summary: string;
+  skills: string[];
+  experience: string[];
+  education: string[];
+  notes: string[];
+};
+
 export type GenerateCoachReplyInput = {
   userMessage: string;
   pageContext?: string;
@@ -163,6 +204,9 @@ export interface AIProvider {
 
   analyzeJobFit(input: AnalyzeJobFitInput): Promise<AnalyzeJobFitOutput>;
   optimizeResume(input: OptimizeResumeInput): Promise<OptimizeResumeOutput>;
+  generateTailoredResumeDraft(
+    input: GenerateTailoredResumeDraftInput,
+  ): Promise<GenerateTailoredResumeDraftOutput>;
   generateCoachReply(input: GenerateCoachReplyInput): Promise<GenerateCoachReplyOutput>;
   analyzeSelectedJob(input: AnalyzeSelectedJobInput): Promise<AnalyzeSelectedJobOutput>;
   generateInterviewQuestion(

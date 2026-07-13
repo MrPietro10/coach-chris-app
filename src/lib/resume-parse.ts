@@ -18,6 +18,14 @@ export type ParsedResumeFields = {
   highlights: string;
   education: string;
   rawText: string;
+  candidateName?: string;
+  contactLine?: string;
+  extraSections?: ParsedResumeSection[];
+};
+
+export type ParsedResumeSection = {
+  heading: string;
+  content: string;
 };
 
 export type PdfExtractionDiagnostic = {
@@ -151,6 +159,17 @@ const EDUCATION_SECTION_PATTERNS = [
   /^degrees?\b/i,
 ];
 
+const EXTRA_SECTION_PATTERNS: Array<{ heading: string; patterns: RegExp[] }> = [
+  { heading: "Languages", patterns: [/^languages?\b/i] },
+  { heading: "Certifications", patterns: [/^certifications?\b/i, /^licenses?\b/i] },
+  { heading: "Projects", patterns: [/^selected\s+projects?\b/i] },
+  { heading: "Awards", patterns: [/^awards?\b/i, /^honors?\b/i] },
+  { heading: "Volunteer Experience", patterns: [/^volunteer(\s+experience)?\b/i] },
+  { heading: "Publications", patterns: [/^publications?\b/i] },
+  { heading: "Links", patterns: [/^links?\b/i, /^portfolio\b/i, /^websites?\b/i] },
+  { heading: "Other Information", patterns: [/^other\s+information\b/i, /^additional\s+information\b/i] },
+];
+
 const MAX_SECTION_HEADER_LENGTH = 80;
 
 function isLikelySectionHeader(line: string): boolean {
@@ -159,42 +178,102 @@ function isLikelySectionHeader(line: string): boolean {
 
 function detectResumeSectionHeader(line: string): ResumeSectionKey | null {
   if (!isLikelySectionHeader(line)) return null;
+  if (SUMMARY_SECTION_PATTERNS.some((pattern) => pattern.test(line))) return "summary";
   if (SKILLS_SECTION_PATTERNS.some((pattern) => pattern.test(line))) return "skills";
   if (EXPERIENCE_SECTION_PATTERNS.some((pattern) => pattern.test(line))) return "highlights";
   if (EDUCATION_SECTION_PATTERNS.some((pattern) => pattern.test(line))) return "education";
-  if (SUMMARY_SECTION_PATTERNS.some((pattern) => pattern.test(line))) return "summary";
   return null;
+}
+
+function detectExtraSectionHeader(line: string): string | null {
+  if (!isLikelySectionHeader(line)) return null;
+  for (const section of EXTRA_SECTION_PATTERNS) {
+    if (section.patterns.some((pattern) => pattern.test(line))) {
+      return section.heading;
+    }
+  }
+  return null;
+}
+
+function looksLikeCandidateName(line: string): boolean {
+  if (line.length < 3 || line.length > 80) return false;
+  if (/\d/.test(line) || /@/.test(line) || /https?:\/\//i.test(line)) return false;
+  if (/[|]/.test(line)) return false;
+  return /^[A-Za-z][A-Za-z'., -]+$/.test(line);
+}
+
+function extractHeaderDetails(lines: string[]): { candidateName?: string; contactLine?: string } {
+  const headerLines: string[] = [];
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+    if (!trimmed) {
+      if (headerLines.length > 0) break;
+      continue;
+    }
+    if (detectResumeSectionHeader(trimmed) || detectExtraSectionHeader(trimmed)) {
+      break;
+    }
+    headerLines.push(trimmed);
+    if (headerLines.length >= 4) break;
+  }
+
+  if (headerLines.length === 0) return {};
+  const candidateName = looksLikeCandidateName(headerLines[0]) ? headerLines[0] : undefined;
+  const remaining = candidateName ? headerLines.slice(1) : headerLines;
+  const contactLine = remaining.length > 0 ? remaining.join(" · ") : undefined;
+  return { candidateName, contactLine };
 }
 
 function mapResumeTextToFields(rawText: string): ParsedResumeFields {
   const normalized = normalizeExtractedText(rawText);
   if (!normalized) {
-    return { summary: "", skills: "", highlights: "", education: "", rawText: "" };
+    return { summary: "", skills: "", highlights: "", education: "", rawText: "", extraSections: [] };
   }
 
   const lines = normalized.split("\n");
+  const { candidateName, contactLine } = extractHeaderDetails(lines);
   const sections: Record<ResumeSectionKey, string[]> = {
     summary: [],
     skills: [],
     highlights: [],
     education: [],
   };
+  const extraSections = new Map<string, string[]>();
   let current: ResumeSectionKey = "summary";
+  let currentExtraHeading: string | null = null;
 
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) {
-      sections[current].push("");
+      if (currentExtraHeading) {
+        extraSections.set(currentExtraHeading, [...(extraSections.get(currentExtraHeading) ?? []), ""]);
+      } else {
+        sections[current].push("");
+      }
+      continue;
+    }
+
+    const extraSectionHeader = detectExtraSectionHeader(trimmed);
+    if (extraSectionHeader) {
+      currentExtraHeading = extraSectionHeader;
+      if (!extraSections.has(extraSectionHeader)) {
+        extraSections.set(extraSectionHeader, []);
+      }
       continue;
     }
 
     const sectionHeader = detectResumeSectionHeader(trimmed);
     if (sectionHeader) {
       current = sectionHeader;
+      currentExtraHeading = null;
       continue;
     }
 
-    sections[current].push(trimmed);
+    if (currentExtraHeading) {
+      extraSections.set(currentExtraHeading, [...(extraSections.get(currentExtraHeading) ?? []), trimmed]);
+    } else {
+      sections[current].push(trimmed);
+    }
   }
 
   const joinSection = (items: string[]) =>
@@ -240,7 +319,23 @@ function mapResumeTextToFields(rawText: string): ParsedResumeFields {
       .join("\n");
   }
 
-  return { summary, skills, highlights, education, rawText: normalized };
+  const extraSectionOutput = Array.from(extraSections.entries())
+    .map(([heading, items]) => ({
+      heading,
+      content: joinSection(items),
+    }))
+    .filter((section) => section.content.length > 0);
+
+  return {
+    summary,
+    skills,
+    highlights,
+    education,
+    rawText: normalized,
+    candidateName,
+    contactLine,
+    extraSections: extraSectionOutput,
+  };
 }
 
 function toParseableBinary(buffer: Buffer): Uint8Array {

@@ -1,4 +1,10 @@
 import { GoogleGenAI } from "@google/genai";
+import { applyAnalysisUserFacingCopy } from "@/lib/analysis-user-facing-copy";
+import {
+  buildTailoredResumeMissingEvidenceNote,
+  buildTailoredResumePromptGuardrails,
+  enforceTailoredResumeBrevity,
+} from "@/lib/tailored-resume-guardrails";
 import type {
   AIProvider,
   AnalyzeJobFitInput,
@@ -9,6 +15,8 @@ import type {
   GenerateCoachReplyOutput,
   GenerateInterviewQuestionInput,
   GenerateInterviewQuestionOutput,
+  GenerateTailoredResumeDraftInput,
+  GenerateTailoredResumeDraftOutput,
   OptimizeResumeInput,
   OptimizeResumeOutput,
 } from "@/lib/ai/types";
@@ -58,6 +66,46 @@ function cleanList(items: string[], maxItems: number, blocked = new Set<string>(
   return out;
 }
 
+function getRuntimeDateContext(): { isoDate: string; localeDate: string } {
+  const now = new Date();
+  return {
+    isoDate: now.toISOString().slice(0, 10),
+    localeDate: now.toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      timeZone: "UTC",
+    }),
+  };
+}
+
+function collectAnalysisKeywords(input: GenerateTailoredResumeDraftInput): Set<string> {
+  const text = [
+    ...input.analysisContext.topGaps,
+    ...input.analysisContext.riskAreas,
+    input.analysisContext.highestPriorityImprovement,
+    ...input.analysisContext.missingEvidence,
+  ].join(" ");
+  const tokens = text
+    .toLowerCase()
+    .split(/[^a-z0-9+#.-]+/g)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 4);
+  return new Set(tokens);
+}
+
+function noteOverlapsAnalysis(note: string, keywords: Set<string>): boolean {
+  const normalized = note.toLowerCase();
+  for (const keyword of keywords) {
+    if (normalized.includes(keyword)) return true;
+  }
+  return false;
+}
+
+function buildTemplateNote(gapLine: string): string | null {
+  return buildTailoredResumeMissingEvidenceNote(gapLine);
+}
+
 function ensureActionableNextStep(step: string, fallback: string): string {
   const trimmed = step.trim();
   if (!trimmed) return fallback;
@@ -66,14 +114,18 @@ function ensureActionableNextStep(step: string, fallback: string): string {
   return startsWithAction ? trimmed : fallback;
 }
 
-function isMissingEvidenceLine(text: string): boolean {
-  const normalized = text.toLowerCase();
+/** Input/schema gaps only — not analytical resume-vs-job gap statements. */
+function isMissingInputEvidenceLine(text: string): boolean {
+  const normalized = text.toLowerCase().trim();
   return (
-    normalized.includes("missing") ||
-    normalized.includes("not provided") ||
-    normalized.includes("not available") ||
-    normalized.includes("insufficient evidence") ||
-    normalized.includes("no evidence")
+    /^resume summary is missing\.?$/.test(normalized) ||
+    /^resume skills are missing\.?$/.test(normalized) ||
+    /^resume experience section is missing\.?$/.test(normalized) ||
+    /^selected job required skills are missing\.?$/.test(normalized) ||
+    /^selected job description is missing\.?$/.test(normalized) ||
+    normalized.includes("gemini_api_key") ||
+    normalized.includes("gemini is not configured") ||
+    normalized.includes("cannot run single-job analysis")
   );
 }
 
@@ -118,12 +170,12 @@ export class GeminiProvider implements AIProvider {
       score,
       fitLabel: fitLabelFromScore(score),
       strengths: [
-        `Resume summary aligns with ${topSkills[0] ?? "core role requirements"}.`,
-        `Role targeting is relevant to ${input.jobTitle} at ${input.company}.`,
+        `Your summary aligns with ${topSkills[0] ?? "core role requirements"}.`,
+        `Your targeting is relevant to ${input.jobTitle} at ${input.company}.`,
       ],
       gaps: [
-        "Add one quantified impact metric to strengthen evidence.",
-        "Tailor one line to mirror the role's highest-priority requirement.",
+        "Requirement: clearer impact proof. Your resume shows relevant experience but limited quantified outcomes. Strengthen before applying: add one truthful metric to a key bullet.",
+        "Requirement: role-specific framing. Your resume shows transferable skills but not enough direct alignment with the top priority. Strengthen before applying: tailor one summary line to this role.",
       ],
       reasoning:
         "Mock Gemini analysis combines lightweight keyword overlap with coaching heuristics.",
@@ -142,7 +194,182 @@ export class GeminiProvider implements AIProvider {
     };
   }
 
+  async generateTailoredResumeDraft(
+    input: GenerateTailoredResumeDraftInput,
+  ): Promise<GenerateTailoredResumeDraftOutput> {
+    const runtimeDate = getRuntimeDateContext();
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey || apiKey === "your_real_key_here") {
+      return {
+        provider: this.id,
+        summary: input.resumeContext.summary.trim(),
+        skills: [...input.resumeContext.skills],
+        experience: [...input.resumeContext.experienceHighlights],
+        education: [...input.resumeContext.educationEntries],
+        notes: [
+          "Live tailored drafting requires a valid GEMINI_API_KEY on the server.",
+          `Priority for ${input.selectedJob.title}: ${input.analysisContext.highestPriorityImprovement}`,
+        ],
+      };
+    }
+
+    const behavior = input.behaviorContext;
+    const tailoringGuardrails = buildTailoredResumePromptGuardrails();
+    const systemPolicy = [
+      "You are Coach Chris drafting a job-specific resume version.",
+      `Current date (UTC): ${runtimeDate.isoDate} (${runtimeDate.localeDate}).`,
+      "CRITICAL RULES:",
+      "- Start from the provided source resume as your base document; improve it rather than rewriting from scratch.",
+      "- Use ONLY evidence already present in the provided resume context.",
+      "- Do NOT fabricate employers, titles, dates, metrics, certifications, languages, or skills.",
+      "- You may reword, reorder, shorten, and emphasize existing truthful content for the target job.",
+      "- Keep all four sections (summary, skills, experience, education). Never return an empty section unless the source section is empty.",
+      "- Do NOT add new skills unless they are clearly implied by existing experience text.",
+      "- If a gap cannot be addressed with existing evidence, add a note in notes[] only — not in resume body — in this format: 'If true, add a concise bullet like: [short example]'.",
+      "- Never use placeholder metrics like 'increased X by Y%' unless that metric exists in source material.",
+      "- Dates earlier than the current date are not future dates.",
+      "- Future education dates are valid when clearly labeled expected/anticipated.",
+      "- Do not ask the user to confirm facts that are already clearly stated in the resume context.",
+      "- Use second-person language only: you, your resume, your experience.",
+      tailoringGuardrails,
+      behavior
+        ? [
+            "Identity:",
+            ...behavior.policy.identity.map((line) => `- ${line}`),
+            "Core Rules:",
+            ...behavior.policy.coreRules.map((line) => `- ${line}`),
+            "Mode Guidelines:",
+            ...behavior.policy.modeGuidelines[behavior.mode].map((line) => `- ${line}`),
+          ].join("\n")
+        : "",
+      "Return valid JSON only with keys: summary (string), skills (string[]), experience (string[]), education (string[]), notes (string[] up to 5).",
+      "summary: 2–4 short sentences max; lead with role fit, not buzzwords.",
+      "experience: one concise bullet per item (ideally 1–2 lines, max ~280 characters each).",
+      "education: one short line per entry.",
+      "skills: relevant keywords only; do not dump every possible tool.",
+      "Coach notes must be based only on topGaps, highestPriorityImprovement, missingEvidence, riskAreas, and behavior guidance from the context.",
+      "Prioritize examples from work experience first, projects/startups second, MBA/coursework third.",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    const context = {
+      selectedJob: {
+        title: input.selectedJob.title,
+        company: input.selectedJob.company,
+        location: input.selectedJob.location,
+        description: input.selectedJob.description,
+        requiredSkills: input.selectedJob.requiredSkills,
+      },
+      sourceResume: input.sourceResume,
+      resumeContext: input.resumeContext,
+      analysisContext: input.analysisContext,
+      behaviorGuidance: behavior?.guidance ?? [],
+      currentDate: runtimeDate.isoDate,
+      technicalEvidenceHints: [
+        "Skills",
+        "Tools and Technologies",
+        "Tech and AI",
+        "AI tools",
+        "Cursor",
+        "Claude",
+        "Gemini",
+        "n8n",
+        "Lovable",
+        "technical collaboration",
+        "systems/process work",
+      ],
+    };
+
+    const userPrompt = [
+      "Draft a tailored resume for the selected job using ONLY the resume evidence provided.",
+      "Sharpen existing bullets, add relevant keywords, and emphasize fit—do not over-explain or overstuff.",
+      "Keep every bullet concise and skimmable (1–2 lines). Leave interview-level detail for notes, not resume body.",
+      "Align summary and bullets to the job and analysis gaps without inventing facts.",
+      "Put missing-evidence prompts in notes[] as: If true, add a concise bullet like: [short example].",
+      "Run the internal resume editor checklist before responding.",
+      "",
+      `Context JSON:\n${JSON.stringify(context, null, 2)}`,
+    ].join("\n");
+
+    const client = new GoogleGenAI({ apiKey });
+    let raw = "";
+    try {
+      const response = await client.models.generateContent({
+        model: "models/gemini-2.5-flash",
+        contents: `${systemPolicy}\n\n${userPrompt}`,
+      });
+      raw = typeof response.text === "string" ? response.text : "";
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : String(error));
+    }
+
+    const jsonText = extractJsonObject(raw);
+    let parsed: Partial<GenerateTailoredResumeDraftOutput>;
+    try {
+      parsed = JSON.parse(jsonText) as Partial<GenerateTailoredResumeDraftOutput>;
+    } catch {
+      throw new Error("Gemini returned invalid JSON for tailored resume draft.");
+    }
+
+    const skills = Array.isArray(parsed.skills)
+      ? parsed.skills.filter((item): item is string => typeof item === "string").map((item) => item.trim())
+      : input.resumeContext.skills;
+    const experience = Array.isArray(parsed.experience)
+      ? parsed.experience
+          .filter((item): item is string => typeof item === "string")
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0)
+      : input.resumeContext.experienceHighlights;
+    const education = Array.isArray(parsed.education)
+      ? parsed.education
+          .filter((item): item is string => typeof item === "string")
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0)
+      : input.resumeContext.educationEntries;
+    const analysisKeywords = collectAnalysisKeywords(input);
+    const modelNotes = Array.isArray(parsed.notes)
+      ? cleanList(
+          parsed.notes.filter((item): item is string => typeof item === "string"),
+          5,
+        )
+      : [];
+    const filteredModelNotes = modelNotes.filter((note) => noteOverlapsAnalysis(note, analysisKeywords));
+    const templateNotes = input.analysisContext.missingEvidence
+      .map((line) => buildTemplateNote(line))
+      .filter((line): line is string => Boolean(line))
+      .slice(0, 2);
+    const notes = cleanList(
+      [
+        ...filteredModelNotes,
+        `Top priority next step: ${input.analysisContext.highestPriorityImprovement}`,
+        ...templateNotes,
+      ],
+      5,
+    );
+
+    const brevityAdjusted = enforceTailoredResumeBrevity({
+      summary:
+        typeof parsed.summary === "string" && parsed.summary.trim().length > 0
+          ? parsed.summary.trim()
+          : input.resumeContext.summary.trim(),
+      skills: skills.length > 0 ? skills : input.resumeContext.skills,
+      experience: experience.length > 0 ? experience : input.resumeContext.experienceHighlights,
+      education: education.length > 0 ? education : input.resumeContext.educationEntries,
+    });
+
+    return {
+      provider: this.id,
+      summary: brevityAdjusted.summary,
+      skills: brevityAdjusted.skills,
+      experience: brevityAdjusted.experience,
+      education: brevityAdjusted.education,
+      notes,
+    };
+  }
+
   async generateCoachReply(input: GenerateCoachReplyInput): Promise<GenerateCoachReplyOutput> {
+    const runtimeDate = getRuntimeDateContext();
     const apiKey = process.env.GEMINI_API_KEY;
     console.log("[GeminiProvider] GEMINI_API_KEY present:", Boolean(apiKey && apiKey !== "your_real_key_here"));
     if (!apiKey || apiKey === "your_real_key_here") {
@@ -158,6 +385,7 @@ export class GeminiProvider implements AIProvider {
     const systemPolicy = behavior
       ? [
           "You are Coach Chris.",
+          `Current date (UTC): ${runtimeDate.isoDate} (${runtimeDate.localeDate}).`,
           "Identity:",
           ...behavior.policy.identity.map((line) => `- ${line}`),
           "Core Rules:",
@@ -166,8 +394,11 @@ export class GeminiProvider implements AIProvider {
           ...behavior.policy.tone.map((line) => `- ${line}`),
           "Mode Guidelines:",
           ...behavior.policy.modeGuidelines[behavior.mode].map((line) => `- ${line}`),
+          "When discussing timelines, treat dates earlier than the current date as past dates.",
+          "Treat expected graduation dates as valid when the resume explicitly labels them expected/anticipated.",
+          "Do not ask users to confirm facts already clearly present in provided context.",
         ].join("\n")
-      : "You are Coach Chris. Be concise, practical, honest, and never invent experience or metrics.";
+      : `You are Coach Chris. Current date (UTC): ${runtimeDate.isoDate}. Be concise, practical, honest, and never invent experience or metrics.`;
 
     const contextLines: string[] = [];
     if (input.pageContext) contextLines.push(`Page Context: ${input.pageContext}`);
@@ -199,6 +430,7 @@ export class GeminiProvider implements AIProvider {
     if (behavior?.guidance?.length) {
       contextLines.push(`Behavior Guidance: ${behavior.guidance.join(" | ")}`);
     }
+    contextLines.push(`Current Date (UTC): ${runtimeDate.isoDate}`);
     if (input.recentMessages && input.recentMessages.length > 0) {
       const recent = input.recentMessages
         .slice(-4)
@@ -236,6 +468,7 @@ export class GeminiProvider implements AIProvider {
   }
 
   async analyzeSelectedJob(input: AnalyzeSelectedJobInput): Promise<AnalyzeSelectedJobOutput> {
+    const runtimeDate = getRuntimeDateContext();
     console.log("TEST_ENV_VAR:", process.env.TEST_ENV_VAR);
     const apiKey = process.env.GEMINI_API_KEY;
     console.log("[GeminiProvider] GEMINI_API_KEY present:", Boolean(apiKey && apiKey !== "your_real_key_here"));
@@ -288,6 +521,7 @@ export class GeminiProvider implements AIProvider {
     const systemPolicy = behavior
       ? [
           "You are Coach Chris.",
+          `Current date (UTC): ${runtimeDate.isoDate} (${runtimeDate.localeDate}).`,
           "Identity:",
           ...behavior.policy.identity.map((line) => `- ${line}`),
           "Core Rules:",
@@ -297,12 +531,18 @@ export class GeminiProvider implements AIProvider {
           "Mode Guidelines:",
           ...behavior.policy.modeGuidelines[behavior.mode].map((line) => `- ${line}`),
           "Output Rule: Return valid JSON only and no markdown fences.",
-          "If evidence is incomplete, explicitly list what is missing in topGaps and riskAreas.",
+          "Speak directly to the user with you/your/your resume — never the candidate, he, she, his, or her.",
+          "Put missing input fields only in missingEvidence, not in topGaps.",
+          "Dates earlier than current date are not future dates.",
+          "Expected future education dates are valid when labeled expected/anticipated.",
+          "Do not ask users to confirm facts that are already explicit in the resume context.",
         ].join("\n")
       : [
           "You are Coach Chris.",
+          `Current date (UTC): ${runtimeDate.isoDate}.`,
           "Never invent experience, metrics, or qualifications.",
-          "If evidence is missing, explicitly say what is missing.",
+          "Speak directly to the user with you/your/your resume.",
+          "If resume input is missing, list it only in missingEvidence.",
           "Return valid JSON only and no markdown fences.",
         ].join("\n");
 
@@ -313,6 +553,20 @@ export class GeminiProvider implements AIProvider {
       optimizeContext: input.optimizeContext,
       behaviorGuidance: behavior?.guidance ?? [],
       missingEvidence,
+      currentDate: runtimeDate.isoDate,
+      technicalEvidenceChecklist: [
+        "Skills",
+        "Tools and Technologies",
+        "Tech and AI",
+        "AI tools",
+        "Cursor",
+        "Claude",
+        "Gemini",
+        "n8n",
+        "Lovable",
+        "technical collaboration",
+        "systems/process work",
+      ],
     };
 
     const userPrompt = [
@@ -321,15 +575,24 @@ export class GeminiProvider implements AIProvider {
       "Respond with JSON object with exactly these keys:",
       'experience (number 0-100), experienceExplanation (string), evidence (number 0-100), evidenceExplanation (string), skills (number 0-100), skillsExplanation (string), domain (number 0-100), domainExplanation (string), role (number 0-100), roleExplanation (string), overallFitSummary (string), topStrengths (string[] up to 3), topGaps (string[] up to 3), riskAreas (string[] up to 3), highestPriorityImprovement (string), missingEvidence (string[] up to 5).',
       "Only provide component scores. Do not provide an overall numeric fit score.",
-      "Keep topGaps focused on actual candidate-job mismatches (not missing input fields).",
-      "Each topGap must be specific and contextual: name the missing evidence/experience, tie it to the role context, and explain why it matters.",
+      "Voice: write all user-facing strings in second person (you/your/your resume/your experience). Never use the candidate, he, she, his, or her.",
+      "overallFitSummary, topStrengths, rubric explanations, topGaps, riskAreas, and highestPriorityImprovement must all use direct address.",
+      "Keep topGaps focused on resume-vs-role mismatches (not missing input fields).",
+      "Each topGap must use up to 3 short sentences in this order:",
+      "1) Requirement: [specific job requirement].",
+      "2) Your resume shows: [related evidence you found, or say it does not yet show this only after checking summary, skills, experience highlights, and education].",
+      "3) Strengthen before applying: [one concrete, truthful resume edit].",
+      "Evidence calibration:",
+      "- Before any gap, scan skills, experience highlights, and education for tools/technologies, AI tools, product/building/prototyping, technical collaboration, and systems/process work.",
+      "- Include evidence from sections such as Skills, Tools and Technologies, Tech and AI, AI tools, Cursor, Claude, Gemini, n8n, Lovable, technical collaboration, and systems/process work.",
+      "- If some related but indirect evidence exists, say: 'Your resume shows some related evidence (e.g., ...), but not enough direct evidence of [requirement].'",
+      "- Only say your resume does not yet show [X] when there is truly no related evidence in the provided resume context.",
+      "- Do not use absolute phrasing like 'no evidence', 'doesn't show any', or 'zero engagement' when related tools, AI, product, or cross-functional work appears anywhere on the resume.",
       "Avoid generic phrasing like 'communication skills missing' or 'needs more leadership experience'.",
-      "Prefer concrete wording like 'No evidence of stakeholder communication in product delivery context, which weakens readiness for cross-functional launch ownership. Add one resume bullet showing partner alignment and delivery outcome.'",
-      "When possible, make each topGap actionable by including a clear next improvement step.",
-      "Keep riskAreas focused on hiring risk implications, distinct from topGaps.",
-      "Put missing input or unknown evidence only in missingEvidence.",
-      "Keep each item concise (one sentence max) and specific.",
-      "Make highestPriorityImprovement a concrete action step on one artifact (summary or bullet).",
+      "Keep riskAreas focused on hiring risk implications for you, distinct from topGaps.",
+      "Put missing resume/job input fields only in missingEvidence (e.g., empty skills section).",
+      "Keep topStrengths and riskAreas concise (one sentence each).",
+      "Make highestPriorityImprovement a concrete action step on your summary or a bullet.",
       "",
       `Context JSON:\n${JSON.stringify(context, null, 2)}`,
     ].join("\n");
@@ -365,7 +628,7 @@ export class GeminiProvider implements AIProvider {
       : missingEvidence.slice(0, 3);
 
     const movedMissingEvidence = cleanList(
-      [...topGapsRaw, ...riskAreasRaw].filter(isMissingEvidenceLine),
+      [...topGapsRaw, ...riskAreasRaw].filter(isMissingInputEvidenceLine),
       5,
     );
     const missingEvidenceOutput = cleanList(
@@ -375,7 +638,7 @@ export class GeminiProvider implements AIProvider {
     const missingEvidenceKeys = new Set(missingEvidenceOutput.map((item) => normalizeKey(item)));
 
     const topGapsOutput = cleanList(
-      topGapsRaw.filter((item) => !isMissingEvidenceLine(item)),
+      topGapsRaw.filter((item) => !isMissingInputEvidenceLine(item)),
       3,
       missingEvidenceKeys,
     );
@@ -385,7 +648,7 @@ export class GeminiProvider implements AIProvider {
       ...topGapsOutput.map((item) => normalizeKey(item)),
     ]);
     const riskAreasOutput = cleanList(
-      riskAreasRaw.filter((item) => !isMissingEvidenceLine(item)),
+      riskAreasRaw.filter((item) => !isMissingInputEvidenceLine(item)),
       3,
       blockedForRisk,
     );
@@ -411,23 +674,23 @@ export class GeminiProvider implements AIProvider {
       experience:
         typeof (parsed as { experienceExplanation?: unknown }).experienceExplanation === "string"
           ? (parsed as { experienceExplanation: string }).experienceExplanation.trim()
-          : "Assesses depth and relevance of comparable role experience.",
+          : "How much depth and relevance your comparable role experience shows for this job.",
       evidence:
         typeof (parsed as { evidenceExplanation?: unknown }).evidenceExplanation === "string"
           ? (parsed as { evidenceExplanation: string }).evidenceExplanation.trim()
-          : "Assesses whether claims are supported by concrete resume evidence.",
+          : "How well your resume backs up claims with concrete examples.",
       skills:
         typeof (parsed as { skillsExplanation?: unknown }).skillsExplanation === "string"
           ? (parsed as { skillsExplanation: string }).skillsExplanation.trim()
-          : "Assesses overlap between role needs and demonstrated skills.",
+          : "How much overlap there is between role needs and skills on your resume.",
       domain:
         typeof (parsed as { domainExplanation?: unknown }).domainExplanation === "string"
           ? (parsed as { domainExplanation: string }).domainExplanation.trim()
-          : "Assesses relevant domain familiarity for this role context.",
+          : "How familiar your background looks with this role's domain.",
       role:
         typeof (parsed as { roleExplanation?: unknown }).roleExplanation === "string"
           ? (parsed as { roleExplanation: string }).roleExplanation.trim()
-          : "Assesses alignment with role scope and core responsibilities.",
+          : "How closely your scope and responsibilities align with this role.",
     };
 
     const topStrengthsClean = cleanList(
@@ -438,7 +701,7 @@ export class GeminiProvider implements AIProvider {
     );
     const topGapsWithDriver = cleanList(topGapsOutput, 4, missingEvidenceKeys);
 
-    return {
+    return applyAnalysisUserFacingCopy({
       provider: this.id,
       fitScore,
       rubricScores,
@@ -446,13 +709,13 @@ export class GeminiProvider implements AIProvider {
       overallFitSummary:
         typeof parsed.overallFitSummary === "string" && parsed.overallFitSummary.trim().length > 0
           ? parsed.overallFitSummary.trim()
-          : "Evidence is incomplete to produce a reliable fit summary.",
+          : "Your resume evidence is incomplete, so this fit summary is directional only.",
       topStrengths: topStrengthsClean,
       topGaps: topGapsWithDriver,
       riskAreas: riskAreasOutput,
       highestPriorityImprovement,
       missingEvidence: missingEvidenceOutput,
-    };
+    });
   }
 
   async generateInterviewQuestion(

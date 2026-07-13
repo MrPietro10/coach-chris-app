@@ -17,8 +17,26 @@ export type JobUrlImportErrorCode =
 export const JOB_URL_IMPORT_HELPER_COPY =
   "Works best with public company career pages like Greenhouse, Lever, Ashby, Workday, and company websites. Some job boards like LinkedIn or Indeed may block imports. If that happens, paste the job description manually.";
 
+export const JOB_URL_IMPORT_FAILURE_MODAL_TITLE = "We couldn't import this job link";
+
+export const JOB_URL_IMPORT_FAILURE_MODAL_MESSAGE =
+  "Some job boards, including LinkedIn, block automated imports. Copy the job description from the posting and paste it below.";
+
+export const JOB_URL_IMPORT_LINKEDIN_FAILURE_MODAL_MESSAGE =
+  "LinkedIn did not allow Coach Chris to read this page. Paste the job description manually.";
+
 export const JOB_URL_IMPORT_FAILURE_MESSAGE =
   "We couldn't import this job post. Try pasting the description manually.";
+
+export const JOB_URL_IMPORT_FAILURE_INLINE_HINT =
+  "Paste the job description in the manual section below.";
+
+export function getJobUrlImportFailureModalMessage(code: JobUrlImportErrorCode): string {
+  if (code === "linkedin_blocked") {
+    return JOB_URL_IMPORT_LINKEDIN_FAILURE_MODAL_MESSAGE;
+  }
+  return JOB_URL_IMPORT_FAILURE_MODAL_MESSAGE;
+}
 
 export const JOB_URL_IMPORT_UNSUPPORTED_MESSAGE =
   "This page looks private or unsupported. Paste the description manually.";
@@ -36,8 +54,8 @@ export function getUserFacingJobUrlImportError(code: JobUrlImportErrorCode): {
       return {
         title: "LinkedIn not supported",
         message:
-          "LinkedIn did not allow us to read this page. Paste the job description manually.",
-        hint: "Copy the description from the LinkedIn job post and paste it under Option 2.",
+          "LinkedIn did not allow Coach Chris to read this page. Paste the job description manually.",
+        hint: JOB_URL_IMPORT_FAILURE_INLINE_HINT,
       };
     case "indeed_search_page":
       return {

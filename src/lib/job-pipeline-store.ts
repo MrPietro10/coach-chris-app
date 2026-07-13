@@ -1,7 +1,5 @@
-import {
-  readAlphaScopedStorageItem,
-  writeAlphaScopedStorageItem,
-} from "@/lib/alpha-scoped-storage";
+import { readAlphaScopedStorageItem } from "@/lib/alpha-scoped-storage";
+import { writeScopedJson } from "@/lib/alpha-scoped-json-write";
 import { isJobStatus, PIPELINE_STAGES } from "@/lib/job-pipeline";
 import type { JobStatus, JobStatusMap } from "@/types/coach";
 
@@ -44,7 +42,7 @@ export function getStoredJobStatuses(): JobStatusMap {
 
 export function saveJobStatuses(statuses: JobStatusMap): void {
   if (!isBrowser()) return;
-  writeAlphaScopedStorageItem("job-statuses", JSON.stringify(statuses));
+  writeScopedJson("job-statuses", statuses);
   dispatchPipelineUpdated();
 }
 
@@ -60,7 +58,7 @@ export function getStoredJobStatusTimestamps(): JobStatusTimestampMap {
 
 export function saveJobStatusTimestamps(timestamps: JobStatusTimestampMap): void {
   if (!isBrowser()) return;
-  writeAlphaScopedStorageItem("job-status-timestamps", JSON.stringify(timestamps));
+  writeScopedJson("job-status-timestamps", timestamps);
   dispatchPipelineUpdated();
 }
 
@@ -108,9 +106,17 @@ export function clearJobPipelineState(jobId: string): void {
   const notes = getJobApplicationNotes();
   if (jobId in notes) {
     delete notes[jobId];
-    writeAlphaScopedStorageItem("job-application-notes", JSON.stringify(notes));
+    writeScopedJson("job-application-notes", notes);
     dispatchPipelineUpdated();
   }
+}
+
+export function clearAllJobPipelineState(): void {
+  if (!isBrowser()) return;
+  writeScopedJson("job-statuses", {});
+  writeScopedJson("job-status-timestamps", {});
+  writeScopedJson("job-application-notes", {});
+  dispatchPipelineUpdated();
 }
 
 export function setJobApplicationNote(jobId: string, note: string): void {
@@ -122,7 +128,7 @@ export function setJobApplicationNote(jobId: string, note: string): void {
   } else {
     notes[jobId] = trimmed;
   }
-  writeAlphaScopedStorageItem("job-application-notes", JSON.stringify(notes));
+  writeScopedJson("job-application-notes", notes);
   dispatchPipelineUpdated();
 }
 

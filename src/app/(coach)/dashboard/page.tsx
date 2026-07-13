@@ -4,6 +4,8 @@ import Link from "next/link";
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { DashboardActiveJobPanel } from "@/components/jobs/dashboard-active-job-panel";
 import { DashboardJobCard } from "@/components/jobs/dashboard-job-card";
+import { ClearAllJobsConfirmDialog } from "@/components/jobs/clear-all-jobs-confirm-dialog";
+import { RemoveJobConfirmDialog } from "@/components/jobs/remove-job-confirm-dialog";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatCard } from "@/components/ui/stat-card";
 import { ACTIVE_JOB_CHANGED_EVENT, getActiveJobSnapshot } from "@/lib/active-job";
@@ -13,6 +15,7 @@ import {
   sortByLastUpdated,
 } from "@/lib/dashboard-jobs";
 import {
+  clearAllJobsFromWorkspace,
   deleteUserJob,
   getActiveResumeLabel,
   getAllStoredJobs,
@@ -71,6 +74,9 @@ export default function DashboardPage() {
         }
       : readDashboardState(),
   );
+  const [clearAllDialogOpen, setClearAllDialogOpen] = useState(false);
+  const [clearAllNotice, setClearAllNotice] = useState<string | null>(null);
+  const [pendingRemoveJobId, setPendingRemoveJobId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isClient) return;
@@ -126,7 +132,28 @@ export default function DashboardPage() {
   }
 
   function handleRemove(jobId: string) {
-    deleteUserJob(jobId);
+    setPendingRemoveJobId(jobId);
+  }
+
+  function handleConfirmRemoveJob(options: { removeLinkedTailoredResumes: boolean }) {
+    if (!pendingRemoveJobId) return;
+    deleteUserJob(pendingRemoveJobId, options);
+    setPendingRemoveJobId(null);
+    setState(readDashboardState());
+  }
+
+  const pendingRemoveJob = pendingRemoveJobId
+    ? sortedEntries.find((entry) => entry.job.id === pendingRemoveJobId)?.job
+    : null;
+
+  function handleConfirmClearAllJobs(options: { removeLinkedTailoredResumes: boolean }) {
+    clearAllJobsFromWorkspace(jobs, options);
+    setClearAllDialogOpen(false);
+    setClearAllNotice(
+      options.removeLinkedTailoredResumes
+        ? "Jobs cleared. Linked tailored resumes were removed."
+        : "Jobs cleared. You can add a new job anytime.",
+    );
     setState(readDashboardState());
   }
 
@@ -225,10 +252,27 @@ export default function DashboardPage() {
       ) : null}
 
       <section className="space-y-3">
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-sm font-medium text-zinc-900">All saved jobs</h2>
-          <span className="text-xs text-zinc-500">{sortedEntries.length} roles</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-zinc-500">{sortedEntries.length} roles</span>
+            {sortedEntries.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => setClearAllDialogOpen(true)}
+                className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-50 hover:text-zinc-800"
+              >
+                Clear all jobs
+              </button>
+            ) : null}
+          </div>
         </div>
+
+        {clearAllNotice ? (
+          <p className="rounded-lg border border-emerald-200 bg-emerald-50/80 px-3 py-2 text-xs text-emerald-900">
+            {clearAllNotice}
+          </p>
+        ) : null}
 
         {sortedEntries.length === 0 ? (
           <div className="rounded-xl border border-zinc-200/80 bg-white px-5 py-6 text-center">
@@ -261,6 +305,19 @@ export default function DashboardPage() {
         Job data is stored locally in your browser (alpha-scoped). Switch active jobs anytime — pipeline
         notes and analysis stay tied to each role.
       </p>
+
+      <ClearAllJobsConfirmDialog
+        open={clearAllDialogOpen}
+        onCancel={() => setClearAllDialogOpen(false)}
+        onConfirm={handleConfirmClearAllJobs}
+      />
+
+      <RemoveJobConfirmDialog
+        open={Boolean(pendingRemoveJob)}
+        jobTitle={pendingRemoveJob?.title ?? "this job"}
+        onCancel={() => setPendingRemoveJobId(null)}
+        onConfirm={handleConfirmRemoveJob}
+      />
     </>
   );
 }

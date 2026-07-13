@@ -17,12 +17,14 @@ export {
   buildInterviewBehaviorContext,
   buildJobFitBehaviorContext,
   buildResumeOptimizationBehaviorContext,
+  buildTailoredResumeDraftBehaviorContext,
 } from "@/lib/ai/chris-behavior-policy";
 export {
   analyzeJobFit,
   analyzeSelectedJob,
   generateCoachReply,
   generateInterviewQuestion,
+  generateTailoredResumeDraft,
   optimizeResume,
 } from "@/lib/ai/service";
 export { ProviderNotConfiguredError, ProviderNotImplementedError } from "@/lib/ai/errors";
@@ -40,6 +42,8 @@ export type {
   GenerateCoachReplyOutput,
   GenerateInterviewQuestionInput,
   GenerateInterviewQuestionOutput,
+  GenerateTailoredResumeDraftInput,
+  GenerateTailoredResumeDraftOutput,
   OptimizeResumeInput,
   OptimizeResumeOutput,
   ProviderConfigState,

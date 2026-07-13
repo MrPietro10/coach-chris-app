@@ -4,50 +4,121 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { buildAnalysisInputFingerprint } from "@/lib/analysis-input-fingerprint";
 import {
-  ANALYSIS_MISSING_INPUTS_MESSAGE,
   ANALYSIS_PROGRESS_STEPS,
   ANALYSIS_SUCCESS_MESSAGE,
-  ANALYSIS_TEMPORARY_FAILURE_MESSAGE,
+  messageForAnalysisFailureCode,
   type AnalysisFailureCode,
   parseAnalysisFailureResponse,
   toUserFacingAnalysisError,
 } from "@/lib/analysis-flow-messages";
-import { validateAnalysisRequest } from "@/lib/analysis-request";
 import {
-  AnalysisFeedbackBanner,
+  logAnalysisRetryDiagnostic,
+  validateAnalysisRequest,
+} from "@/lib/analysis-request";
+import {
   type AnalysisFeedbackStatus,
 } from "@/components/results/analysis-feedback-banner";
+import { Step3StatusStrip } from "@/components/results/step3-status-strip";
 import { AnalysisFailureModal } from "@/components/results/analysis-failure-modal";
+import { TailoredResumeDraftFailureModal } from "@/components/results/tailored-resume-draft-failure-modal";
+import { TailoredResumeDraftModal } from "@/components/results/tailored-resume-draft-modal";
+import {
+  ExportTailoredDraftDialog,
+  type TailoredDraftResumeIntent,
+} from "@/components/results/export-tailored-draft-dialog";
+import { runTailoredResumeDraftWithRetry } from "@/lib/client-run-tailored-resume-draft";
+import type { TailoredDraftFailureCode } from "@/lib/tailored-draft-flow-messages";
+import {
+  ANALYSIS_SNAPSHOT_CONTEXT_NOTICE,
+  ANALYSIS_SNAPSHOT_COPY_NOTICE,
+  ANALYSIS_SNAPSHOT_EXPORT_NOTICE,
+} from "@/lib/analysis-snapshot-messages";
+import {
+  buildAnalysisResumeSnapshotFromInput,
+  enrichComputedJobAnalysisWithResumeLink,
+  getAnalysisResumeVersionLabel,
+  restoreAnalysisSnapshotAsResumeVersion,
+  snapshotToStoredInput,
+} from "@/lib/analysis-resume-linkage";
+import { getStoredResumeInputForAnalysis } from "@/lib/analysis-resume-selection";
+import {
+  getResultsResumeLabel,
+  resolveResultsDisplayResume,
+  resolveResumeForAnalysisRun,
+  type ResultsResumeContext,
+} from "@/lib/results-resume-context";
 import {
   buildAnalysisResumeContext,
   hasAnalysisResumeContext,
 } from "@/lib/analysis-resume-context";
 import { getReadyAnalysisForJob } from "@/lib/analysis-records";
-import { Document, Packer, Paragraph, TextRun } from "docx";
+import { logEvent } from "@/lib/alpha-usage-logger";
+import {
+  getActiveResumeRecord,
+  getLatestTailoredResumeForJob,
+  getResumeRecord,
+  recordToInput,
+  saveResumeDraftForRecord,
+  saveResumeInputForRecord,
+  type StoredResumeInput,
+  type StoredResumeRecord,
+} from "@/lib/resume-store";
+import {
+  buildTailoredResumeVersionName,
+  draftFieldsToStoredInput,
+  type TailoredResumeDraft,
+} from "@/lib/tailored-resume-draft";
+import {
+  mergeTailoredFieldsWithSource,
+  storedInputToDraftFields,
+} from "@/lib/tailored-resume-merge";
+import {
+  buildPendingTailoredDraft,
+  clearPendingTailoredDraftForJob,
+  getPendingTailoredDraftForJobAndSource,
+  getPendingTailoredDraftForJob,
+  hasPendingTailoredDraftForJob,
+  PENDING_TAILORED_DRAFT_MESSAGE,
+  pendingToTailoredDraft,
+  savePendingTailoredDraft,
+} from "@/lib/pending-tailored-drafts";
+import { resolveResultsExport, type ResultsExportResolution } from "@/lib/results-export-context";
+import {
+  buildResumeExportNotice,
+  buildResumeExportPlainText,
+  downloadResumeExport,
+} from "@/lib/resume-export";
+import { KeyGapsList } from "@/components/results/key-gaps-list";
 import { JobApplicationTracking } from "@/components/jobs/job-application-tracking";
-import { ActiveResumeCallout } from "@/components/resume/active-resume-callout";
+import { ClearAllJobsConfirmDialog } from "@/components/jobs/clear-all-jobs-confirm-dialog";
+import { RemoveJobConfirmDialog } from "@/components/jobs/remove-job-confirm-dialog";
 import { CoachChrisIntro } from "@/components/onboarding/coach-chris-intro";
 import { PageHeader } from "@/components/ui/page-header";
 import { getProviderConfig } from "@/lib/ai";
 import {
   getComputedJobAnalysesState,
   clearAllUserJobs,
+  createTailoredResumeVersion,
   deleteUserJob,
   getAllStoredJobs,
   getAnalyzedJobsState,
   getStoredUserJobs,
   getResumeParsedAt,
+  getResumePersistenceState,
   getResumeSavedAt,
+  getStoredProfile,
   getStoredResumeInput,
   getStoredResumeUploadState,
   getSelectedJobId,
   RESUME_STORAGE_CHANGED_EVENT,
   saveStoredResumeDraft,
   saveStoredResumeInput,
-  clearPendingAnalysisJobId,
+  clearPendingAnalysisContext,
   clearSelectedJobId,
+  getPendingAnalysisContext,
   getPendingAnalysisJobId,
-  markPendingAnalysisJobId,
+  getPendingAnalysisResumeId,
+  markPendingAnalysisContext,
   setComputedJobAnalysis,
   setJobAnalyzed,
   setSelectedJobId as persistSelectedJobId,
@@ -68,7 +139,6 @@ import {
 import { JobActiveBadge } from "@/components/jobs/job-active-badge";
 import { AskChrisLink } from "@/components/ui/ask-chris-link";
 import { InlineOptimizeForJob, type GapDrivenInput } from "@/components/optimize/inline-optimize";
-import { logEvent } from "@/lib/alpha-usage-logger";
 import {
   buildFitSummaryLine,
   confidenceToAxisPercent,
@@ -291,20 +361,6 @@ function CompactFitMeter({ score, fit }: { score: number; fit: FitCategory }) {
   );
 }
 
-function highlightMetricPlaceholders(text: string) {
-  const parts = text.split(/(ADD METRIC:[^—]*?)(?=\s*$|—)/);
-  return parts.map((part, i) => {
-    if (part.startsWith("ADD METRIC:")) {
-      return (
-        <strong key={i} className="font-semibold text-amber-700">
-          {part}
-        </strong>
-      );
-    }
-    return part;
-  });
-}
-
 function inferComputedFitLabel(payload: AnalyzeSelectedJobOutput): FitCategory | null {
   const fitBand = getFitBand(payload.fitScore);
   if (fitBand === "High") return "Strong Fit";
@@ -485,6 +541,7 @@ export default function ResultsPage() {
   const [analysisFeedbackStatus, setAnalysisFeedbackStatus] =
     useState<AnalysisFeedbackStatus>("idle");
   const [analysisFeedbackMessage, setAnalysisFeedbackMessage] = useState<string | null>(null);
+  const [analysisFailureCode, setAnalysisFailureCode] = useState<AnalysisFailureCode | null>(null);
   const [resumeSummaryInput, setResumeSummaryInput] = useState(() => {
     if (typeof window === "undefined") return currentResume.summary;
     const stored = getStoredResumeInput();
@@ -509,15 +566,38 @@ export default function ResultsPage() {
     return getStoredResumeInput().education;
   });
   const [copyResumeNotice, setCopyResumeNotice] = useState<string | null>(null);
+  const [exportResumeNotice, setExportResumeNotice] = useState<string | null>(null);
+  const [exportTailoredDraftDialogOpen, setExportTailoredDraftDialogOpen] = useState(false);
+  const [tailoredDraftActionIntent, setTailoredDraftActionIntent] =
+    useState<TailoredDraftResumeIntent>("export");
+  const [tailoredDraftModalOpen, setTailoredDraftModalOpen] = useState(false);
+  const [tailoredDraft, setTailoredDraft] = useState<TailoredResumeDraft | null>(null);
+  const [isDraftingTailoredResume, setIsDraftingTailoredResume] = useState(false);
+  const [isSavingTailoredDraft, setIsSavingTailoredDraft] = useState(false);
+  const [tailoredDraftFailureOpen, setTailoredDraftFailureOpen] = useState(false);
+  const [tailoredDraftFailureMessage, setTailoredDraftFailureMessage] = useState<string | null>(null);
+  const [tailoredDraftFailureCode, setTailoredDraftFailureCode] =
+    useState<TailoredDraftFailureCode | null>(null);
+  const [tailoredDraftCanRetry, setTailoredDraftCanRetry] = useState(false);
+  const [tailoredDraftSourceResumeId, setTailoredDraftSourceResumeId] = useState<string | null>(null);
+  const [tailoredDraftSourceResumeName, setTailoredDraftSourceResumeName] = useState<string | null>(null);
+  const [tailoredDraftUpdatedAt, setTailoredDraftUpdatedAt] = useState<string | null>(null);
+  const [showPendingTailoredDraftBanner, setShowPendingTailoredDraftBanner] = useState(false);
+  const [savedTailoredVersion, setSavedTailoredVersion] = useState<StoredResumeRecord | null>(null);
+  const [isRerunningAfterTailoredSave, setIsRerunningAfterTailoredSave] = useState(false);
   const [resumeSavedNotice, setResumeSavedNotice] = useState<string | null>(null);
+  const [clearSavedJobsDialogOpen, setClearSavedJobsDialogOpen] = useState(false);
+  const [removeJobDialogOpen, setRemoveJobDialogOpen] = useState(false);
   const [showInlineOptimize, setShowInlineOptimize] = useState(false);
   const [showInlineResumeEditor, setShowInlineResumeEditor] = useState(false);
   const optimizeRef = useRef<HTMLElement | null>(null);
   const resumeEditorRef = useRef<HTMLElement | null>(null);
   const [structuredGapsByJob, setStructuredGapsByJob] = useState<Record<string, StructuredGap[]>>({});
+  const [contextResumeId, setContextResumeId] = useState<string | null>(null);
   const autoAnalysisStartedForJobRef = useRef<string | null>(null);
   const singleJobAnalysisInFlightRef = useRef(false);
   const scrollToResultsAfterAnalysisRef = useRef(false);
+  const tailoredRerunResumeNameRef = useRef<string | null>(null);
   const fitResultsRef = useRef<HTMLDivElement | null>(null);
   const hasResumeInput =
     resumeSummaryInput.trim().length > 0 ||
@@ -530,6 +610,15 @@ export default function ResultsPage() {
   const resumeUploadState = mounted ? getStoredResumeUploadState() : null;
   const resumeSavedAt = mounted ? getResumeSavedAt() : null;
   const resumeParsedAt = mounted ? getResumeParsedAt() : null;
+  const resumePersistence = mounted
+    ? getResumePersistenceState()
+    : {
+        activeResumeId: null,
+        activeResumeName: null,
+        createdAt: null,
+        updatedAt: null,
+        sourceFileName: null,
+      };
   const resumeWorkspaceSnapshot = {
     stored: storedResumeInput,
     draft: {
@@ -541,6 +630,11 @@ export default function ResultsPage() {
     upload: resumeUploadState,
     savedAt: resumeSavedAt,
     parsedAt: resumeParsedAt,
+    activeResumeId: resumePersistence.activeResumeId,
+    activeResumeName: resumePersistence.activeResumeName,
+    createdAt: resumePersistence.createdAt,
+    updatedAt: resumePersistence.updatedAt,
+    sourceFileName: resumePersistence.sourceFileName,
   };
 
   const computedAnalysis = computedAnalysesState[selectedJobId];
@@ -580,6 +674,53 @@ export default function ResultsPage() {
           evidenceLevel: confidenceLevel,
         })
       : null;
+  const resultsResumeContext = useMemo((): ResultsResumeContext => {
+    const display = resolveResultsDisplayResume(computedAnalysis);
+    const record =
+      (contextResumeId ? getResumeRecord(contextResumeId) : null) ?? display.record;
+    const resumeId = record?.id ?? display.resumeId;
+    const resumeName = record?.name?.trim() || display.resumeName;
+    const activeResumeId = display.activeResumeId;
+    return {
+      ...display,
+      resumeId,
+      resumeName,
+      record,
+      input: {
+        summary: resumeSummaryInput,
+        skills: resumeSkillsInput,
+        highlights: resumeHighlightsInput,
+        education: resumeEducationInput,
+      },
+      differsFromActive: Boolean(
+        resumeId && activeResumeId && resumeId !== activeResumeId,
+      ),
+    };
+  }, [
+    computedAnalysis,
+    contextResumeId,
+    resumeEducationInput,
+    resumeHighlightsInput,
+    resumeSkillsInput,
+    resumeSummaryInput,
+  ]);
+
+  useEffect(() => {
+    if (!mounted || !job?.id || tailoredDraftModalOpen || tailoredDraft) {
+      if (!tailoredDraft && job?.id) {
+        setShowPendingTailoredDraftBanner(hasPendingTailoredDraftForJob(job.id));
+      } else {
+        setShowPendingTailoredDraftBanner(false);
+      }
+      return;
+    }
+    setShowPendingTailoredDraftBanner(hasPendingTailoredDraftForJob(job.id));
+  }, [job?.id, mounted, tailoredDraft, tailoredDraftModalOpen]);
+
+  const analyzedResumeVersionLabel =
+    getResultsResumeLabel(resultsResumeContext) ??
+    getAnalysisResumeVersionLabel(computedAnalysis) ??
+    "Unknown resume";
 
   const matrixAnalysisItems = availableJobs
     .map((jobItem) => getReadyAnalysisForJob(jobItem.id, computedAnalysesState, analyses))
@@ -628,21 +769,30 @@ export default function ResultsPage() {
 
   function handleRemoveCurrentJob(): void {
     if (!job || isGeneratingSingleJobAnalysis) return;
-    const confirmed = window.confirm("Remove this job from your workspace?");
-    if (!confirmed) return;
-    const removedId = job.id;
-    deleteUserJob(removedId);
-    selectJobAfterRemoval(removedId);
-    setSingleJobContextNotice("Job removed from your workspace.");
+    setRemoveJobDialogOpen(true);
   }
 
-  function handleClearSavedJobs(): void {
-    if (userSavedJobCount === 0 || isGeneratingSingleJobAnalysis) return;
-    const confirmed = window.confirm(
-      `Clear all ${userSavedJobCount} saved jobs you added? Demo/sample jobs stay. This cannot be undone.`,
+  function handleConfirmRemoveCurrentJob(options: { removeLinkedTailoredResumes: boolean }) {
+    if (!job || isGeneratingSingleJobAnalysis) return;
+    const removedId = job.id;
+    deleteUserJob(removedId, options);
+    selectJobAfterRemoval(removedId);
+    setRemoveJobDialogOpen(false);
+    setSingleJobContextNotice(
+      options.removeLinkedTailoredResumes
+        ? "Job removed. Linked tailored resumes were removed."
+        : "Job removed from your workspace.",
     );
-    if (!confirmed) return;
-    clearAllUserJobs();
+  }
+
+  function handleClearSavedJobs() {
+    if (userSavedJobCount === 0 || isGeneratingSingleJobAnalysis) return;
+    setClearSavedJobsDialogOpen(true);
+  }
+
+  function handleConfirmClearSavedJobs(options: { removeLinkedTailoredResumes: boolean }) {
+    if (userSavedJobCount === 0 || isGeneratingSingleJobAnalysis) return;
+    clearAllUserJobs(options);
     notifySessionDataChanged();
     const remaining = refreshJobsFromStorage();
     const nextId = remaining[0]?.id ?? "";
@@ -652,35 +802,88 @@ export default function ResultsPage() {
       setSelectedJobId("");
       clearSelectedJobId();
     }
-    setSingleJobContextNotice("Saved jobs cleared.");
+    setClearSavedJobsDialogOpen(false);
+    setSingleJobContextNotice(
+      options.removeLinkedTailoredResumes
+        ? "Saved jobs cleared. Linked tailored resumes were removed."
+        : "Saved jobs cleared. Your resume versions are still saved.",
+    );
   }
 
-  function setSelectedJob(id: string) {
+  function setSelectedJob(
+    id: string,
+    options?: { updatePendingContext?: boolean },
+  ) {
     setSelectedJobId(id);
     persistSelectedJobId(id);
+    if (options?.updatePendingContext === false) {
+      return;
+    }
+    const analysisForJob = getComputedJobAnalysesState()[id];
+    const displayContext = resolveResultsDisplayResume(analysisForJob);
+    markPendingAnalysisContext(id, displayContext.resumeId);
+    if (displayContext.resumeId) {
+      setContextResumeId(displayContext.resumeId);
+    }
   }
 
-  function persistInlineResumeDraft(next: {
-    summary: string;
-    skills: string;
-    highlights: string;
-    education: string;
-  }): void {
-    saveStoredResumeDraft({
+  function pendingResumeIdForAttempt(
+    analysisResumeRecord: StoredResumeRecord | null,
+  ): string | null {
+    return analysisResumeRecord?.id ?? contextResumeId ?? getPendingAnalysisResumeId();
+  }
+
+  function logRetryContext(
+    phase: string,
+    options?: {
+      retryJobId?: string | null;
+      retryResumeId?: string | null;
+      failureCode?: string | null;
+      failureMessage?: string | null;
+    },
+  ): void {
+    const pending = getPendingAnalysisContext();
+    logAnalysisRetryDiagnostic({
+      phase,
+      pendingJobId: pending.jobId,
+      pendingResumeId: pending.resumeId,
+      retryJobId: options?.retryJobId ?? null,
+      retryResumeId: options?.retryResumeId ?? null,
+      failureCode: options?.failureCode ?? null,
+      failureMessage: options?.failureMessage ?? null,
+    });
+  }
+
+  function applyResumeInputToState(input: StoredResumeInput): void {
+    setResumeSummaryInput(input.summary);
+    setResumeSkillsInput(input.skills);
+    setResumeHighlightsInput(input.highlights);
+    setResumeEducationInput(input.education);
+  }
+
+  function syncResultsResumeContextFromAnalysis(
+    analysisForJob: ComputedJobAnalysis | undefined,
+  ): void {
+    const ctx = resolveResultsDisplayResume(analysisForJob);
+    setContextResumeId(ctx.resumeId);
+    applyResumeInputToState(ctx.input);
+  }
+
+  function persistInlineResumeDraft(
+    next: StoredResumeInput,
+    targetResumeId: string | null = contextResumeId,
+  ): void {
+    const normalized = {
       summary: next.summary.trim(),
       skills: next.skills.trim(),
       highlights: next.highlights.trim(),
       education: next.education.trim(),
-    });
-  }
-
-  function rehydrateResumeInputsFromStorage(): void {
-    const stored = getStoredResumeInput();
-    if (!stored.summary && !stored.skills && !stored.highlights && !stored.education) return;
-    setResumeSummaryInput(stored.summary);
-    setResumeSkillsInput(stored.skills);
-    setResumeHighlightsInput(stored.highlights);
-    setResumeEducationInput(stored.education);
+    };
+    if (targetResumeId) {
+      saveResumeDraftForRecord(targetResumeId, normalized);
+      return;
+    }
+    saveStoredResumeDraft(normalized);
   }
 
   useEffect(() => {
@@ -729,7 +932,6 @@ export default function ResultsPage() {
         return nextSelectedJobId;
       });
     };
-    rehydrateResumeInputsFromStorage();
     const nextJobs = getAllStoredJobs(jobs);
     const nextAnalyzedJobsState = getAnalyzedJobsState();
     const nextComputedAnalysesState = getComputedJobAnalysesState();
@@ -745,10 +947,13 @@ export default function ResultsPage() {
     if (initialSelectedJobId) {
       persistSelectedJobId(initialSelectedJobId);
     }
+    syncResultsResumeContextFromAnalysis(nextComputedAnalysesState[initialSelectedJobId]);
     setMounted(true);
     const refreshAll = () => {
       refreshJobs();
-      rehydrateResumeInputsFromStorage();
+      const latestAnalyses = getComputedJobAnalysesState();
+      setComputedAnalysesState(latestAnalyses);
+      syncResultsResumeContextFromAnalysis(latestAnalyses[selectedJobId]);
       setJobStatuses(getStoredJobStatuses());
     };
     window.addEventListener("storage", refreshAll);
@@ -772,8 +977,10 @@ export default function ResultsPage() {
     setAnalysisCanRetry(false);
     setAnalysisFeedbackStatus("idle");
     setAnalysisFeedbackMessage(null);
+    setAnalysisFailureCode(null);
     setShowInlineOptimize(false);
     setShowInlineResumeEditor(false);
+    syncResultsResumeContextFromAnalysis(computedAnalysesState[selectedJobId]);
   }, [selectedJobId]);
 
   const persistInlineResumeFields = useCallback((): boolean => {
@@ -786,9 +993,19 @@ export default function ResultsPage() {
     if (!fields.summary && !fields.skills && !fields.highlights && !fields.education) {
       return false;
     }
+    if (contextResumeId) {
+      saveResumeInputForRecord(contextResumeId, fields);
+      return true;
+    }
     saveStoredResumeInput(fields);
     return true;
-  }, [resumeEducationInput, resumeHighlightsInput, resumeSkillsInput, resumeSummaryInput]);
+  }, [
+    contextResumeId,
+    resumeEducationInput,
+    resumeHighlightsInput,
+    resumeSkillsInput,
+    resumeSummaryInput,
+  ]);
 
   useEffect(() => {
     if (!isGeneratingSingleJobAnalysis) {
@@ -817,28 +1034,40 @@ export default function ResultsPage() {
     return () => window.clearTimeout(timer);
   }, [hasReadyFitAnalysis, job, selectedJobId]);
 
-  const applyOptimizeDocToResumeContext = useCallback((doc: OptimizeDocument) => {
-    setResumeSummaryInput(sanitizeResumeLineForOutput(doc.summary ?? ""));
-    setResumeSkillsInput(
-      (doc.tools ?? [])
-        .map((tool) => sanitizeResumeLineForOutput(tool))
-        .filter((tool) => tool.length > 0)
-        .join(", "),
-    );
-    const highlights = (doc.experience ?? [])
-      .flatMap((entry) => entry.bullets ?? [])
-      .map((bullet) => sanitizeResumeLineForOutput(bullet))
-      .filter((bullet) => bullet.length > 0);
-    setResumeHighlightsInput(highlights.join("\n"));
-    const educationLines = (doc.education ?? [])
-      .map((entry) => {
-        const parts = [entry.degree, entry.school, entry.dates].filter(Boolean).join(" · ");
-        return sanitizeResumeLineForOutput(parts);
-      })
-      .filter((line) => line.length > 0);
-    setResumeEducationInput(educationLines.join("\n"));
-    setCopyResumeNotice(null);
-  }, []);
+  const applyOptimizeDocToResumeContext = useCallback(
+    (doc: OptimizeDocument) => {
+      const nextInput: StoredResumeInput = {
+        summary: sanitizeResumeLineForOutput(doc.summary ?? ""),
+        skills: (doc.tools ?? [])
+          .map((tool) => sanitizeResumeLineForOutput(tool))
+          .filter((tool) => tool.length > 0)
+          .join(", "),
+        highlights: (doc.experience ?? [])
+          .flatMap((entry) => entry.bullets ?? [])
+          .map((bullet) => sanitizeResumeLineForOutput(bullet))
+          .filter((bullet) => bullet.length > 0)
+          .join("\n"),
+        education: (doc.education ?? [])
+          .map((entry) => {
+            const parts = [entry.degree, entry.school, entry.dates].filter(Boolean).join(" · ");
+            return sanitizeResumeLineForOutput(parts);
+          })
+          .filter((line) => line.length > 0)
+          .join("\n"),
+      };
+      setResumeSummaryInput(nextInput.summary);
+      setResumeSkillsInput(nextInput.skills);
+      setResumeHighlightsInput(nextInput.highlights);
+      setResumeEducationInput(nextInput.education);
+      if (contextResumeId) {
+        saveResumeDraftForRecord(contextResumeId, nextInput);
+      } else {
+        saveStoredResumeDraft(nextInput);
+      }
+      setCopyResumeNotice(null);
+    },
+    [contextResumeId],
+  );
 
   const inlineGapInputs = useMemo<GapDrivenInput[]>(() => {
     const structured = structuredGapsByJob[selectedJobId] ?? [];
@@ -871,23 +1100,50 @@ export default function ResultsPage() {
   const generateSingleJobAnalysis = useCallback(
     async (
       eventName: "run_analysis" | "rerun_analysis",
-      options?: { forceRefresh?: boolean },
+      options?: {
+        forceRefresh?: boolean;
+        resumeIdForRun?: string;
+        resumeInputForRun?: StoredResumeInput;
+      },
     ) => {
     if (!job) {
       setSingleJobContextNotice("Select a job to generate single-job analysis.");
       setSingleJobError(null);
+      setAnalysisCanRetry(false);
+      setAnalysisFailureCode("missing_job");
       setAnalysisFeedbackStatus("failed");
-      setAnalysisFeedbackMessage("Select a job before running analysis.");
+      setAnalysisFeedbackMessage(messageForAnalysisFailureCode("missing_job").message);
       return;
     }
     if (isGeneratingSingleJobAnalysis || singleJobAnalysisInFlightRef.current) return;
 
-    const resumeContext = buildAnalysisResumeContext({
+    const inlineResumeInput: StoredResumeInput = {
       summary: resumeSummaryInput,
       skills: resumeSkillsInput,
       highlights: resumeHighlightsInput,
       education: resumeEducationInput,
-    });
+    };
+    const analysisResumeResolution = options?.resumeIdForRun
+      ? (() => {
+          const overrideRecord = getResumeRecord(options.resumeIdForRun);
+          const overrideInput =
+            options.resumeInputForRun ??
+            (overrideRecord ? recordToInput(overrideRecord) : inlineResumeInput);
+          return resolveResumeForAnalysisRun({
+            computedAnalysis: computedAnalysesState[job.id],
+            contextResumeId: options.resumeIdForRun,
+            inlineInput: overrideInput,
+          });
+        })()
+      : resolveResumeForAnalysisRun({
+          computedAnalysis: computedAnalysesState[job.id],
+          contextResumeId,
+          inlineInput: inlineResumeInput,
+        });
+    const analysisResumeInput = analysisResumeResolution.input;
+    const analysisResumeRecord = analysisResumeResolution.record;
+
+    const resumeContext = buildAnalysisResumeContext(analysisResumeInput);
 
     const requestValidation = validateAnalysisRequest({
       jobDescription: job.description,
@@ -897,12 +1153,28 @@ export default function ResultsPage() {
     });
 
     if (!requestValidation.ok) {
+      const retryResumeId = pendingResumeIdForAttempt(analysisResumeRecord);
+      markPendingAnalysisContext(job.id, retryResumeId);
+      logRetryContext("validation_failed", {
+        retryJobId: job.id,
+        retryResumeId,
+        failureCode: requestValidation.code,
+        failureMessage: requestValidation.message,
+      });
       setAnalysisCanRetry(false);
+      setAnalysisFailureCode(requestValidation.code);
       setAnalysisFeedbackStatus("failed");
       setAnalysisFeedbackMessage(requestValidation.message);
       setSingleJobError(null);
       return;
     }
+
+    const retryResumeId = pendingResumeIdForAttempt(analysisResumeRecord);
+    markPendingAnalysisContext(job.id, retryResumeId);
+    logRetryContext("analysis_started", {
+      retryJobId: job.id,
+      retryResumeId,
+    });
 
     const inputFingerprint = buildAnalysisInputFingerprint({
       jobId: job.id,
@@ -914,7 +1186,9 @@ export default function ResultsPage() {
       !options?.forceRefresh &&
       eventName !== "rerun_analysis" &&
       storedComputed?.analysisState === "ready" &&
-      storedComputed.inputFingerprint === inputFingerprint;
+      storedComputed.inputFingerprint === inputFingerprint &&
+      (!storedComputed.resumeVersionId ||
+        storedComputed.resumeVersionId === analysisResumeRecord?.id);
 
     if (shouldUseCachedAnalysis) {
       setJobAnalyzed(job.id, true);
@@ -924,8 +1198,13 @@ export default function ResultsPage() {
         setStoredJobStatus(job.id, "Analyzed");
       }
       setComputedAnalysesState((prev) => ({ ...prev, [job.id]: storedComputed }));
-      setSelectedJob(job.id);
-      clearPendingAnalysisJobId();
+      setSelectedJob(job.id, { updatePendingContext: false });
+      clearPendingAnalysisContext();
+      syncResultsResumeContextFromAnalysis(storedComputed);
+      logRetryContext("cache_hit_success", {
+        retryJobId: job.id,
+        retryResumeId: analysisResumeRecord?.id ?? retryResumeId,
+      });
       setSingleJobError(null);
       setSingleJobContextNotice("Showing your saved analysis for these inputs.");
       setAnalysisFeedbackStatus("success");
@@ -939,11 +1218,11 @@ export default function ResultsPage() {
     singleJobAnalysisInFlightRef.current = true;
     setIsGeneratingSingleJobAnalysis(true);
     setAnalysisCanRetry(false);
+    setAnalysisFailureCode(null);
     setSingleJobError(null);
     setSingleJobContextNotice(null);
     setAnalysisFeedbackStatus("running");
     setAnalysisFeedbackMessage("Analysis running…");
-    clearPendingAnalysisJobId();
     const previousConfidence: ConfidenceLevel | null = hasReadyFitAnalysis
       ? getStoredOrInferredConfidence({
           storedConfidence: storedComputed?.confidenceLevel,
@@ -953,6 +1232,7 @@ export default function ResultsPage() {
           evidenceItems: analysis?.strengths ?? [],
         })
       : null;
+    const activeResume = analysisResumeRecord;
     try {
       const response = await fetch("/api/coach/single-job-analysis", {
         method: "POST",
@@ -965,6 +1245,10 @@ export default function ResultsPage() {
             location: job.location,
             description: job.description,
             requiredSkills: job.requiredSkills,
+          },
+          resumeMeta: {
+            id: activeResume?.id ?? null,
+            name: activeResume?.name ?? null,
           },
           resumeContext,
           fitContext: analysis
@@ -1006,32 +1290,35 @@ export default function ResultsPage() {
             }
           : null);
         setAnalysisCanRetry(failure.retryable);
+        setAnalysisFailureCode(failure.code ?? null);
         setAnalysisFeedbackStatus("failed");
-        setAnalysisFeedbackMessage(
-          failure.retryable ? ANALYSIS_TEMPORARY_FAILURE_MESSAGE : failure.message,
-        );
+        setAnalysisFeedbackMessage(failure.message);
         setSingleJobError(null);
-        if (process.env.NODE_ENV !== "production") {
-          console.warn("[results] analysis_api_failed", {
-            status: response.status,
-            code: failureBody?.code,
-            jobId: job.id,
-          });
-        }
-        markPendingAnalysisJobId(job.id);
+        markPendingAnalysisContext(job.id, retryResumeId);
+        logRetryContext("api_failed", {
+          retryJobId: job.id,
+          retryResumeId,
+          failureCode: failure.code ?? failureBody?.code ?? null,
+          failureMessage: failure.message,
+        });
         return;
       }
       const payload = (await response.json()) as AnalyzeSelectedJobOutput;
       const unavailableMessage = getProviderUnavailableMessage(payload);
       if (unavailableMessage) {
-        const canRetryUnavailable = !unavailableMessage.toLowerCase().includes("gemini_api_key");
-        setAnalysisCanRetry(canRetryUnavailable);
+        const apiKeyFailure = messageForAnalysisFailureCode("api_key_missing");
+        setAnalysisCanRetry(apiKeyFailure.retryable);
+        setAnalysisFailureCode("api_key_missing");
         setAnalysisFeedbackStatus("failed");
-        setAnalysisFeedbackMessage(
-          canRetryUnavailable ? ANALYSIS_TEMPORARY_FAILURE_MESSAGE : unavailableMessage,
-        );
+        setAnalysisFeedbackMessage(apiKeyFailure.message);
         setSingleJobError(null);
-        markPendingAnalysisJobId(job.id);
+        markPendingAnalysisContext(job.id, retryResumeId);
+        logRetryContext("api_key_missing", {
+          retryJobId: job.id,
+          retryResumeId,
+          failureCode: "api_key_missing",
+          failureMessage: apiKeyFailure.message,
+        });
         return;
       }
       setJobAnalyzed(job.id, true);
@@ -1041,17 +1328,29 @@ export default function ResultsPage() {
         setStoredJobStatus(job.id, "Analyzed");
       }
       const computedBase = toComputedJobAnalysis(job.id, payload);
+      const analysisResumeCompleteness = calculateResumeCompleteness(analysisResumeInput);
       const nextConfidence = inferConfidenceLevel({
-        resumeCompleteness,
+        resumeCompleteness: analysisResumeCompleteness,
         missingEvidenceCount: computedBase.missingEvidence.length,
         keyRequirementEvidenceCount: computedBase.strengths.length,
         evidenceItems: computedBase.strengths,
       });
-      const computed: ComputedJobAnalysis = {
-        ...computedBase,
-        inputFingerprint,
-        confidenceLevel: nextConfidence,
-      };
+      const resumeSnapshot = buildAnalysisResumeSnapshotFromInput(analysisResumeInput);
+      const computed = enrichComputedJobAnalysisWithResumeLink(
+        {
+          ...computedBase,
+          inputFingerprint,
+          confidenceLevel: nextConfidence,
+        },
+        {
+          job,
+          resumeVersion: activeResume
+            ? { id: activeResume.id, name: activeResume.name }
+            : null,
+          resumeSnapshot,
+          candidateName: getStoredProfile().fullName || profile.fullName,
+        },
+      );
       const confidenceChangeMessage =
         previousConfidence === null
           ? null
@@ -1062,11 +1361,27 @@ export default function ResultsPage() {
             });
       setComputedJobAnalysis(computed);
       setComputedAnalysesState((prev) => ({ ...prev, [job.id]: computed }));
-      setSelectedJob(job.id);
+      clearPendingAnalysisContext();
+      if (activeResume) {
+        setContextResumeId(activeResume.id);
+        applyResumeInputToState(analysisResumeInput);
+      }
+      setSelectedJob(job.id, { updatePendingContext: false });
+      logRetryContext("analysis_succeeded", {
+        retryJobId: job.id,
+        retryResumeId: activeResume?.id ?? retryResumeId,
+      });
       window.dispatchEvent(new Event("career-coach:analysis-updated"));
       scrollToResultsAfterAnalysisRef.current = true;
       setAnalysisFeedbackStatus("success");
-      setAnalysisFeedbackMessage(ANALYSIS_SUCCESS_MESSAGE);
+      if (tailoredRerunResumeNameRef.current) {
+        setAnalysisFeedbackMessage(
+          `Re-analysis complete using ${tailoredRerunResumeNameRef.current}.`,
+        );
+        tailoredRerunResumeNameRef.current = null;
+      } else {
+        setAnalysisFeedbackMessage(ANALYSIS_SUCCESS_MESSAGE);
+      }
       if (confidenceChangeMessage) {
         setSingleJobContextNotice(confidenceChangeMessage);
       }
@@ -1074,12 +1389,17 @@ export default function ResultsPage() {
       console.error("single-job-analysis-error", error);
       const failure = toUserFacingAnalysisError(error);
       setAnalysisCanRetry(failure.retryable);
+      setAnalysisFailureCode(failure.code);
       setAnalysisFeedbackStatus("failed");
-      setAnalysisFeedbackMessage(
-        failure.retryable ? ANALYSIS_TEMPORARY_FAILURE_MESSAGE : failure.message,
-      );
+      setAnalysisFeedbackMessage(failure.message);
       setSingleJobError(null);
-      markPendingAnalysisJobId(job.id);
+      markPendingAnalysisContext(job.id, retryResumeId);
+      logRetryContext("analysis_exception", {
+        retryJobId: job.id,
+        retryResumeId,
+        failureCode: failure.code,
+        failureMessage: failure.message,
+      });
     } finally {
       singleJobAnalysisInFlightRef.current = false;
       setIsGeneratingSingleJobAnalysis(false);
@@ -1088,6 +1408,7 @@ export default function ResultsPage() {
   [
     analysis,
     computedAnalysesState,
+    contextResumeId,
     hasReadyFitAnalysis,
     isGeneratingSingleJobAnalysis,
     job,
@@ -1118,6 +1439,7 @@ export default function ResultsPage() {
 
       if (!validation.ok) {
         setAnalysisCanRetry(false);
+        setAnalysisFailureCode(validation.code);
         setAnalysisFeedbackStatus("failed");
         setAnalysisFeedbackMessage(validation.message);
         setSingleJobError(null);
@@ -1126,8 +1448,9 @@ export default function ResultsPage() {
 
       if (!persistInlineResumeFields()) {
         setAnalysisCanRetry(false);
+        setAnalysisFailureCode("missing_resume");
         setAnalysisFeedbackStatus("failed");
-        setAnalysisFeedbackMessage(ANALYSIS_MISSING_INPUTS_MESSAGE);
+        setAnalysisFeedbackMessage(messageForAnalysisFailureCode("missing_resume").message);
         setSingleJobError(null);
         return;
       }
@@ -1161,16 +1484,65 @@ export default function ResultsPage() {
 
   const handleRetryAnalysis = useCallback(() => {
     if (isGeneratingSingleJobAnalysis || singleJobAnalysisInFlightRef.current) return;
+
+    const pending = getPendingAnalysisContext();
+    const retryJobId = pending.jobId ?? job?.id ?? null;
+    const retryResumeId = pending.resumeId ?? contextResumeId;
+
+    if (retryResumeId) {
+      setContextResumeId(retryResumeId);
+      const record = getResumeRecord(retryResumeId);
+      if (record) {
+        applyResumeInputToState({
+          summary: record.summary,
+          skills: record.skills,
+          highlights: record.experience,
+          education: record.education,
+        });
+      }
+    }
+
+    if (retryJobId && retryJobId !== selectedJobId) {
+      setSelectedJobId(retryJobId);
+      persistSelectedJobId(retryJobId);
+    }
+
+    logRetryContext("retry_requested", {
+      retryJobId,
+      retryResumeId,
+      failureCode: analysisFailureCode,
+      failureMessage: analysisFeedbackMessage,
+    });
+
     void generateSingleJobAnalysis("rerun_analysis", { forceRefresh: true });
-  }, [generateSingleJobAnalysis, isGeneratingSingleJobAnalysis]);
+  }, [
+    analysisFailureCode,
+    analysisFeedbackMessage,
+    contextResumeId,
+    generateSingleJobAnalysis,
+    isGeneratingSingleJobAnalysis,
+    job?.id,
+    selectedJobId,
+  ]);
 
   const handleRunAnalysisLater = useCallback(() => {
-    clearPendingAnalysisJobId();
+    logRetryContext("run_later_dismissed", {
+      retryJobId: job?.id ?? getPendingAnalysisJobId(),
+      retryResumeId: contextResumeId ?? getPendingAnalysisResumeId(),
+      failureCode: analysisFailureCode,
+      failureMessage: analysisFeedbackMessage,
+    });
     setSingleJobError(null);
     setAnalysisCanRetry(false);
     setAnalysisFeedbackStatus("idle");
     setAnalysisFeedbackMessage(null);
-  }, []);
+    setAnalysisFailureCode(null);
+  }, [
+    analysisFailureCode,
+    analysisFeedbackMessage,
+    contextResumeId,
+    job?.id,
+  ]);
 
   useEffect(() => {
     if (!mounted || !job || isGeneratingSingleJobAnalysis || hasReadyFitAnalysis) return;
@@ -1178,12 +1550,8 @@ export default function ResultsPage() {
     const pendingJobId = getPendingAnalysisJobId();
     if (!pendingJobId || pendingJobId !== selectedJobId) return;
 
-    const resumeContext = buildAnalysisResumeContext({
-      summary: resumeSummaryInput,
-      skills: resumeSkillsInput,
-      highlights: resumeHighlightsInput,
-      education: resumeEducationInput,
-    });
+    const pendingAnalysisInput = getStoredResumeInputForAnalysis();
+    const resumeContext = buildAnalysisResumeContext(pendingAnalysisInput);
     if (!hasAnalysisResumeContext(resumeContext)) return;
     if (autoAnalysisStartedForJobRef.current === selectedJobId) return;
 
@@ -1202,120 +1570,479 @@ export default function ResultsPage() {
     selectedJobId,
   ]);
 
-  function buildResumeExportText(): string {
-    const skills = resumeSkillsInput
-      .split(",")
-      .map((item) => item.trim())
-      .filter((item) => item.length > 0);
-    const highlights = resumeHighlightsInput
-      .split("\n")
-      .map((item) => item.trim())
-      .filter((item) => item.length > 0);
-    return [
-      profile.fullName?.trim() || "",
-      "",
-      "SUMMARY",
-      resumeSummaryInput.trim() || "(not provided)",
-      "",
-      "SKILLS",
-      skills.length > 0 ? skills.map((item) => `- ${item}`).join("\n") : "- (none)",
-      "",
-      "EXPERIENCE",
-      highlights.length > 0
-        ? highlights.map((item) => `- ${item}`).join("\n")
-        : "- (none)",
-      "",
-      "EDUCATION",
-      resumeEducationInput
-        .split("\n")
-        .map((item) => item.trim())
-        .filter((item) => item.length > 0)
-        .map((item) => `- ${item}`)
-        .join("\n") || "- (none)",
-      "",
-    ]
-      .filter((line, index, all) => !(line === "" && all[index - 1] === ""))
-      .join("\n");
+  function getEffectiveTailoredDraft(): TailoredResumeDraft | null {
+    if (tailoredDraft) return tailoredDraft;
+    if (!job) return null;
+    const pending = getPendingTailoredDraftForJob(job.id);
+    return pending ? pendingToTailoredDraft(pending) : null;
   }
 
-  async function exportResumeDocx() {
-    const confirmed = window.confirm(
-      "Download the updated resume as a .docx file?",
-    );
-    if (!confirmed) return;
-    logEvent("download_resume");
+  function getCurrentDraftSource(): { id: string; name: string } | null {
+    const sourceRecord =
+      (tailoredDraftSourceResumeId ? getResumeRecord(tailoredDraftSourceResumeId) : null) ??
+      resultsResumeContext.record;
+    if (!sourceRecord) return null;
+    return { id: sourceRecord.id, name: sourceRecord.name };
+  }
 
-    const skills = resumeSkillsInput
-      .split(",")
-      .map((item) => item.trim())
-      .filter((item) => item.length > 0);
-    const highlights = resumeHighlightsInput
-      .split("\n")
-      .map((item) => item.trim())
-      .filter((item) => item.length > 0);
-
-    const paragraphs: Paragraph[] = [
-      new Paragraph({
-        children: [
-          new TextRun({
-            text: profile.fullName?.trim() || "Resume",
-            bold: true,
-          }),
-        ],
+  function persistTailoredDraftToStorage(draft: TailoredResumeDraft): boolean {
+    if (!job) return false;
+    const sourceRecord = getCurrentDraftSource();
+    const existing = getPendingTailoredDraftForJob(job.id);
+    const saved = savePendingTailoredDraft(
+      buildPendingTailoredDraft({
+        job,
+        sourceResume:
+          sourceRecord ??
+          (existing
+            ? { id: existing.sourceResumeId, name: existing.sourceResumeName }
+            : null),
+        draft,
+        existingDraftId: existing?.draftId,
+        existingCreatedAt: existing?.createdAt,
       }),
-      new Paragraph(""),
-      new Paragraph({ children: [new TextRun({ text: "SUMMARY", bold: true })] }),
-      new Paragraph(resumeSummaryInput.trim() || "(not provided)"),
-      new Paragraph(""),
-      new Paragraph({ children: [new TextRun({ text: "SKILLS", bold: true })] }),
-      ...(skills.length > 0
-        ? skills.map(
-            (item) =>
-              new Paragraph({
-                text: item,
-                bullet: { level: 0 },
-              }),
-          )
-        : [new Paragraph({ text: "(none)", bullet: { level: 0 } })]),
-      new Paragraph(""),
-      new Paragraph({ children: [new TextRun({ text: "EXPERIENCE", bold: true })] }),
-      ...(highlights.length > 0
-        ? highlights.map(
-            (item) =>
-              new Paragraph({
-                text: item,
-                bullet: { level: 0 },
-              }),
-          )
-        : [new Paragraph({ text: "(none)", bullet: { level: 0 } })]),
-    ];
+    );
+    if (saved) {
+      const refreshed = getPendingTailoredDraftForJob(job.id);
+      setTailoredDraftUpdatedAt(refreshed?.updatedAt ?? new Date().toISOString());
+    }
+    return saved;
+  }
 
-    const resumeDoc = new Document({
-      sections: [
-        {
-          properties: {},
-          children: paragraphs,
-        },
-      ],
+  function getTailoredDraftSourceInput(): StoredResumeInput | null {
+    const sourceRecord =
+      (tailoredDraftSourceResumeId ? getResumeRecord(tailoredDraftSourceResumeId) : null) ??
+      resultsResumeContext.record ??
+      (computedAnalysis?.resumeVersionId
+        ? getResumeRecord(computedAnalysis.resumeVersionId)
+        : null) ??
+      getActiveResumeRecord();
+    return sourceRecord ? recordToInput(sourceRecord) : null;
+  }
+
+  function resolveResultsPageExport(includeUnsavedTailoredDraft: boolean) {
+    const storedProfile = getStoredProfile();
+    const draft = includeUnsavedTailoredDraft ? getEffectiveTailoredDraft() : null;
+    return resolveResultsExport({
+      job: job ?? null,
+      computedAnalysis,
+      resultsResumeContext,
+      savedTailoredVersion,
+      tailoredDraft: draft,
+      tailoredDraftSourceInput: draft ? getTailoredDraftSourceInput() : null,
+      profileFullName: storedProfile.fullName || profile.fullName,
+      profileContact: {
+        location: storedProfile.location,
+        workPermit: storedProfile.workPermit,
+        languages: storedProfile.languages,
+      },
     });
+  }
 
-    const blob = await Packer.toBlob(resumeDoc);
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "resume-context.docx";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
+  async function applyReadyResolution(
+    resolution: Extract<ResultsExportResolution, { kind: "ready" }>,
+    intent: TailoredDraftResumeIntent,
+  ) {
+    if (intent === "export") {
+      await performResultsExport(
+        resolution.versionName,
+        resolution.content,
+        resolution.usesAnalysisSnapshot,
+      );
+      return;
+    }
+    await performResultsCopy(
+      resolution.versionName,
+      buildResumeExportPlainText(resolution.content),
+      resolution.usesAnalysisSnapshot,
+    );
+  }
+
+  async function performResultsExport(
+    versionName: string,
+    content: Parameters<typeof downloadResumeExport>[0],
+    usesAnalysisSnapshot: boolean,
+  ) {
+    const exportNotice = buildResumeExportNotice(versionName, content);
+    const notice = usesAnalysisSnapshot
+      ? `${ANALYSIS_SNAPSHOT_EXPORT_NOTICE} ${exportNotice}`
+      : exportNotice;
+    setExportResumeNotice(notice);
+    setCopyResumeNotice(null);
+    logEvent("download_resume", { format: "docx", usesAnalysisSnapshot });
+    try {
+      await downloadResumeExport(content);
+    } catch {
+      setExportResumeNotice("Could not export resume as DOCX. Please try again.");
+    }
+  }
+
+  async function performResultsCopy(
+    versionName: string,
+    text: string,
+    usesAnalysisSnapshot: boolean,
+  ) {
+    const notice = usesAnalysisSnapshot
+      ? `${ANALYSIS_SNAPSHOT_COPY_NOTICE} Copied ${versionName}.`
+      : `Copied ${versionName}.`;
+    setCopyResumeNotice(notice);
+    setExportResumeNotice(null);
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      setCopyResumeNotice("Could not copy resume. Please try again.");
+    }
+  }
+
+  function openTailoredDraftActionDialog(intent: TailoredDraftResumeIntent) {
+    setTailoredDraftActionIntent(intent);
+    setExportTailoredDraftDialogOpen(true);
+  }
+
+  async function exportResume() {
+    const resolution = resolveResultsPageExport(true);
+    if (resolution.kind === "unsaved-tailored-draft") {
+      openTailoredDraftActionDialog("export");
+      return;
+    }
+    if (resolution.kind !== "ready") return;
+    await applyReadyResolution(resolution, "export");
   }
 
   async function copyResumeText() {
-    try {
-      await navigator.clipboard.writeText(buildResumeExportText());
-      setCopyResumeNotice("Resume copied.");
-    } catch {
-      setCopyResumeNotice("Could not copy resume. Please try again.");
+    const resolution = resolveResultsPageExport(true);
+    if (resolution.kind === "unsaved-tailored-draft") {
+      openTailoredDraftActionDialog("copy");
+      return;
+    }
+    if (resolution.kind !== "ready") return;
+    await applyReadyResolution(resolution, "copy");
+  }
+
+  async function handleApplySavedVersionFromPrompt() {
+    setExportTailoredDraftDialogOpen(false);
+    const resolution = resolveResultsPageExport(false);
+    if (resolution.kind !== "ready") return;
+    await applyReadyResolution(resolution, tailoredDraftActionIntent);
+  }
+
+  function saveTailoredDraftAsVersion(draft: TailoredResumeDraft): StoredResumeRecord | null {
+    if (!job) return null;
+
+    const sourceRecord =
+      (tailoredDraftSourceResumeId ? getResumeRecord(tailoredDraftSourceResumeId) : null) ??
+      resultsResumeContext.record ??
+      (computedAnalysis?.resumeVersionId
+        ? getResumeRecord(computedAnalysis.resumeVersionId)
+        : null) ??
+      getActiveResumeRecord();
+    const versionName = buildTailoredResumeVersionName(job.title, job.company);
+    const sourceInput = sourceRecord ? recordToInput(sourceRecord) : null;
+    const mergedInput = sourceInput
+      ? mergeTailoredFieldsWithSource(sourceInput, draftFieldsToStoredInput(draft))
+      : draftFieldsToStoredInput(draft);
+
+    return createTailoredResumeVersion(mergedInput, {
+      name: versionName,
+      sourceResumeId: sourceRecord?.id ?? "",
+      sourceResumeName: sourceRecord?.name,
+      tailoredForJobId: job.id,
+      tailoredForJobTitle: job.title,
+      tailoredForCompany: job.company,
+      sourceFileName: sourceRecord?.sourceFileName,
+      uploadFileType: sourceRecord?.uploadFileType,
+    });
+  }
+
+  async function completeTailoredDraftSave(
+    draft: TailoredResumeDraft,
+    options: { rerun: boolean },
+  ) {
+    if (!job) return;
+    setIsSavingTailoredDraft(true);
+
+    if (!persistTailoredDraftToStorage(draft)) {
+      setIsSavingTailoredDraft(false);
+      return;
+    }
+
+    const savedRecord = saveTailoredDraftAsVersion(draft);
+    if (!savedRecord) {
+      setIsSavingTailoredDraft(false);
+      return;
+    }
+
+    const savedInput = recordToInput(savedRecord);
+    clearPendingTailoredDraftForJob(job.id);
+    setShowPendingTailoredDraftBanner(false);
+    setTailoredDraftUpdatedAt(null);
+    setSavedTailoredVersion(savedRecord);
+    setTailoredDraftModalOpen(false);
+    setTailoredDraft(null);
+    setTailoredDraftSourceResumeId(null);
+    setTailoredDraftSourceResumeName(null);
+    setIsSavingTailoredDraft(false);
+
+    logEvent("save_tailored_resume_version", {
+      jobId: job.id,
+      versionName: savedRecord.name,
+      resumeId: savedRecord.id,
+      rerunAnalysis: options.rerun,
+    });
+
+    setContextResumeId(savedRecord.id);
+    applyResumeInputToState(savedInput);
+    markPendingAnalysisContext(job.id, savedRecord.id);
+
+    if (options.rerun) {
+      tailoredRerunResumeNameRef.current = savedRecord.name;
+      setIsRerunningAfterTailoredSave(true);
+      try {
+        await generateSingleJobAnalysis("rerun_analysis", {
+          forceRefresh: true,
+          resumeIdForRun: savedRecord.id,
+          resumeInputForRun: savedInput,
+        });
+      } finally {
+        setIsRerunningAfterTailoredSave(false);
+      }
+      return;
+    }
+
+    setResumeSavedNotice(`Tailored resume saved as ${savedRecord.name}.`);
+  }
+
+  async function handleSaveAndRerunTailoredDraft(draft: TailoredResumeDraft) {
+    await completeTailoredDraftSave(draft, { rerun: true });
+  }
+
+  async function handleSaveTailoredDraftWithoutRerun(draft: TailoredResumeDraft) {
+    await completeTailoredDraftSave(draft, { rerun: false });
+  }
+
+  async function handleSaveAndApplyTailoredDraft() {
+    if (!tailoredDraft || !job) return;
+    setIsSavingTailoredDraft(true);
+
+    const savedRecord = saveTailoredDraftAsVersion(tailoredDraft);
+    if (!savedRecord) {
+      setIsSavingTailoredDraft(false);
+      return;
+    }
+
+    setTailoredDraftModalOpen(false);
+    setTailoredDraft(null);
+    setTailoredDraftSourceResumeId(null);
+    setExportTailoredDraftDialogOpen(false);
+    setIsSavingTailoredDraft(false);
+    clearPendingTailoredDraftForJob(job.id);
+    setShowPendingTailoredDraftBanner(false);
+
+    logEvent("save_tailored_resume_version", {
+      jobId: job.id,
+      versionName: savedRecord.name,
+      resumeId: savedRecord.id,
+    });
+
+    const storedProfile = getStoredProfile();
+    const resolution = resolveResultsExport({
+      job,
+      computedAnalysis,
+      resultsResumeContext,
+      savedTailoredVersion: savedRecord,
+      tailoredDraft: null,
+      profileFullName: storedProfile.fullName || profile.fullName,
+      profileContact: {
+        location: storedProfile.location,
+        workPermit: storedProfile.workPermit,
+        languages: storedProfile.languages,
+      },
+    });
+    if (resolution.kind !== "ready") return;
+    await applyReadyResolution(resolution, tailoredDraftActionIntent);
+  }
+
+  function handleRestoreSnapshotAsResumeVersion() {
+    if (!computedAnalysis?.resumeSnapshot) return;
+
+    const restored = restoreAnalysisSnapshotAsResumeVersion(computedAnalysis);
+    if (!restored) return;
+
+    setContextResumeId(restored.id);
+    applyResumeInputToState(snapshotToStoredInput(computedAnalysis.resumeSnapshot));
+    setResumeSavedNotice(`Restored "${restored.name}" as a resume version.`);
+    logEvent("restore_analysis_snapshot_resume", {
+      resumeId: restored.id,
+      jobId: job?.id,
+    });
+  }
+
+  async function handleDraftTailoredResume() {
+    if (!job || !analysis || !fitBand || isDraftingTailoredResume || isGeneratingSingleJobAnalysis) {
+      return;
+    }
+
+    setIsDraftingTailoredResume(true);
+    setTailoredDraftFailureOpen(false);
+    setTailoredDraftFailureMessage(null);
+    setTailoredDraftFailureCode(null);
+    logEvent("tailor_resume", { jobId: job.id, jobTitle: job.title });
+
+    const tailorBaseRecord =
+      getLatestTailoredResumeForJob(job.id) ??
+      resultsResumeContext.record ??
+      (contextResumeId ? getResumeRecord(contextResumeId) : null) ??
+      getActiveResumeRecord();
+    setTailoredDraftSourceResumeId(tailorBaseRecord?.id ?? contextResumeId);
+    setTailoredDraftSourceResumeName(
+      tailorBaseRecord?.name ?? resultsResumeContext.resumeName ?? null,
+    );
+
+    const sourceResumeId = tailorBaseRecord?.id ?? contextResumeId ?? "";
+    const existingDraft =
+      getPendingTailoredDraftForJobAndSource(job.id, sourceResumeId) ??
+      getPendingTailoredDraftForJob(job.id);
+    if (existingDraft) {
+      setTailoredDraft(pendingToTailoredDraft(existingDraft));
+      setTailoredDraftSourceResumeId(existingDraft.sourceResumeId || tailorBaseRecord?.id || null);
+      setTailoredDraftSourceResumeName(
+        existingDraft.sourceResumeName || tailorBaseRecord?.name || null,
+      );
+      setTailoredDraftUpdatedAt(existingDraft.updatedAt);
+      setShowPendingTailoredDraftBanner(false);
+      setTailoredDraftModalOpen(true);
+      setIsDraftingTailoredResume(false);
+      return;
+    }
+
+    const sourceInput = tailorBaseRecord
+      ? recordToInput(tailorBaseRecord)
+      : resultsResumeContext.input;
+    const resumeContext = buildAnalysisResumeContext(sourceInput);
+
+    const result = await runTailoredResumeDraftWithRetry({
+      selectedJob: {
+        jobId: job.id,
+        title: job.title,
+        company: job.company,
+        location: job.location,
+        description: job.description,
+        requiredSkills: job.requiredSkills,
+      },
+      resumeContext,
+      analysisContext: {
+        fit: analysis.fit,
+        score: analysis.score,
+        fitSummary: buildFitSummaryLine({
+          score: analysis.score,
+          fit: analysis.fit,
+          fitBand,
+        }),
+        topStrengths: analysis.strengths.slice(0, 4),
+        topGaps: analysis.gaps.slice(0, 4),
+        highestPriorityImprovement: topPriorityNextStep,
+        missingEvidence: computedAnalysis?.missingEvidence?.slice(0, 5) ?? [],
+        riskAreas: analysis.hrView.slice(0, 3),
+      },
+      sourceResume: tailorBaseRecord
+        ? { id: tailorBaseRecord.id, name: tailorBaseRecord.name }
+        : undefined,
+    });
+
+    setIsDraftingTailoredResume(false);
+
+    if (!result.ok) {
+      setTailoredDraftFailureMessage(result.message);
+      setTailoredDraftFailureCode(result.code);
+      setTailoredDraftCanRetry(result.retryable);
+      setTailoredDraftFailureOpen(true);
+      logEvent("draft_tailored_resume_failed", {
+        jobId: job.id,
+        code: result.code,
+      });
+      return;
+    }
+
+    const mergedInput = mergeTailoredFieldsWithSource(sourceInput, {
+      summary: result.draft.summary,
+      skills: result.draft.skills,
+      highlights: result.draft.highlights,
+      education: result.draft.education,
+    });
+    const mergedDraft: TailoredResumeDraft = {
+      ...storedInputToDraftFields(mergedInput),
+      notes: result.draft.notes,
+    };
+
+    setTailoredDraft(mergedDraft);
+    if (!persistTailoredDraftToStorage(mergedDraft)) {
+      setTailoredDraftFailureMessage(
+        "Coach Chris drafted your resume but could not save the draft in your browser.",
+      );
+      setTailoredDraftFailureCode(null);
+      setTailoredDraftCanRetry(false);
+      setTailoredDraftFailureOpen(true);
+      return;
+    }
+    const persistedDraft = getPendingTailoredDraftForJob(job.id);
+    setTailoredDraftUpdatedAt(persistedDraft?.updatedAt ?? new Date().toISOString());
+    setShowPendingTailoredDraftBanner(false);
+    setTailoredDraftModalOpen(true);
+  }
+
+  function handleContinuePendingTailoredDraft() {
+    if (!job) return;
+    const pending = getPendingTailoredDraftForJob(job.id);
+    if (!pending) {
+      setShowPendingTailoredDraftBanner(false);
+      return;
+    }
+    setTailoredDraftSourceResumeId(pending.sourceResumeId || null);
+    setTailoredDraftSourceResumeName(pending.sourceResumeName || null);
+    setTailoredDraftUpdatedAt(pending.updatedAt);
+    setTailoredDraft(pendingToTailoredDraft(pending));
+    setTailoredDraftModalOpen(true);
+    setShowPendingTailoredDraftBanner(false);
+  }
+
+  function handleDiscardPendingTailoredDraft() {
+    if (job) {
+      clearPendingTailoredDraftForJob(job.id);
+    }
+    setTailoredDraft(null);
+    setTailoredDraftSourceResumeName(null);
+    setTailoredDraftUpdatedAt(null);
+    setShowPendingTailoredDraftBanner(false);
+  }
+
+  async function handleRegenerateTailoredDraft() {
+    const confirmed = window.confirm("Regenerating will replace your current unsaved draft.");
+    if (!confirmed) return;
+    if (job) {
+      clearPendingTailoredDraftForJob(job.id);
+    }
+    setTailoredDraft(null);
+    setTailoredDraftUpdatedAt(null);
+    await handleDraftTailoredResume();
+  }
+
+  function handleRetryTailoredDraft() {
+    setTailoredDraftFailureOpen(false);
+    void handleDraftTailoredResume();
+  }
+
+  function handleTryLaterTailoredDraft() {
+    setTailoredDraftFailureOpen(false);
+    setTailoredDraftFailureMessage(null);
+    setTailoredDraftFailureCode(null);
+    setTailoredDraftCanRetry(false);
+  }
+
+  function handleCancelTailoredDraft() {
+    setTailoredDraftModalOpen(false);
+    setTailoredDraft(null);
+    if (job) {
+      setShowPendingTailoredDraftBanner(hasPendingTailoredDraftForJob(job.id));
     }
   }
 
@@ -1349,26 +2076,67 @@ export default function ResultsPage() {
     );
   }
 
-  function renderImproveResumeActions() {
+  function renderTailorResumeActions() {
     if (!job) return null;
     return (
-      <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-rose-200/80 pt-4">
-        <button
-          type="button"
-          onClick={() => {
-            logEvent("improve_resume");
-            setShowInlineResumeEditor((open) => !open);
-            if (!showInlineResumeEditor) {
-              requestAnimationFrame(() => {
-                resumeEditorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-              });
+      <div className="mt-4 space-y-3 border-t border-rose-200/80 pt-4">
+        <p className="text-xs text-rose-900/80">
+          Coach Chris will draft changes. You approve before anything is saved.
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void handleDraftTailoredResume()}
+            disabled={
+              isGeneratingSingleJobAnalysis ||
+              isDraftingTailoredResume ||
+              isSavingTailoredDraft ||
+              !hasReadyFitAnalysis
             }
-          }}
-          disabled={isGeneratingSingleJobAnalysis}
-          className={primaryBtnClass}
-        >
-          {showInlineResumeEditor ? "Hide resume editor" : "Improve my resume"}
-        </button>
+            className={primaryBtnClass}
+          >
+            {isDraftingTailoredResume
+              ? "Tailoring resume…"
+              : Boolean(
+                  getPendingTailoredDraftForJobAndSource(
+                    job.id,
+                    resultsResumeContext.record?.id ?? contextResumeId ?? "",
+                  ),
+                )
+                ? "Continue tailored draft"
+                : "Tailor my resume"}
+          </button>
+          {Boolean(
+            getPendingTailoredDraftForJobAndSource(
+              job.id,
+              resultsResumeContext.record?.id ?? contextResumeId ?? "",
+            ),
+          ) ? (
+            <button
+              type="button"
+              onClick={() => void handleRegenerateTailoredDraft()}
+              disabled={isGeneratingSingleJobAnalysis || isDraftingTailoredResume || isSavingTailoredDraft}
+              className={secondaryBtnClass}
+            >
+              Regenerate draft
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => {
+              logEvent("edit_resume_manually");
+              setShowInlineResumeEditor((open) => !open);
+              if (!showInlineResumeEditor) {
+                requestAnimationFrame(() => {
+                  resumeEditorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                });
+              }
+            }}
+            disabled={isGeneratingSingleJobAnalysis}
+            className={secondaryBtnClass}
+          >
+            {showInlineResumeEditor ? "Hide manual editor" : "Edit manually"}
+          </button>
         {optimizeData ? (
           <button
             type="button"
@@ -1387,6 +2155,7 @@ export default function ResultsPage() {
             {showInlineOptimize ? "Hide optimizer" : "Guided optimizer"}
           </button>
         ) : null}
+        </div>
       </div>
     );
   }
@@ -1421,6 +2190,33 @@ export default function ResultsPage() {
             {resumeSavedNotice}
           </p>
         ) : null}
+        {showPendingTailoredDraftBanner ? (
+          <div className="mt-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-950">
+            <p>
+              {job?.title
+                ? `${PENDING_TAILORED_DRAFT_MESSAGE} for ${job.title}.`
+                : PENDING_TAILORED_DRAFT_MESSAGE}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={handleContinuePendingTailoredDraft}
+                disabled={isGeneratingSingleJobAnalysis}
+                className="font-medium text-sky-950 underline-offset-2 hover:underline disabled:opacity-50"
+              >
+                Continue editing
+              </button>
+              <button
+                type="button"
+                onClick={handleDiscardPendingTailoredDraft}
+                disabled={isGeneratingSingleJobAnalysis}
+                className="font-medium text-sky-950 underline-offset-2 hover:underline disabled:opacity-50"
+              >
+                Discard draft
+              </button>
+            </div>
+          </div>
+        ) : null}
         <p className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
           <button
             type="button"
@@ -1433,14 +2229,17 @@ export default function ResultsPage() {
           <span className="text-zinc-300" aria-hidden>
             ·
           </span>
-          <button
-            type="button"
-            onClick={() => void exportResumeDocx()}
-            disabled={isGeneratingSingleJobAnalysis}
-            className="font-medium text-zinc-700 underline-offset-2 hover:text-zinc-900 hover:underline disabled:opacity-50"
-          >
-            Export resume
-          </button>
+          <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="text-zinc-600">Export</span>
+            <button
+              type="button"
+              onClick={() => void exportResume()}
+              disabled={isGeneratingSingleJobAnalysis}
+              className="font-medium text-zinc-700 underline-offset-2 hover:text-zinc-900 hover:underline disabled:opacity-50"
+            >
+              DOCX
+            </button>
+          </span>
           <span className="text-zinc-300" aria-hidden>
             ·
           </span>
@@ -1453,7 +2252,21 @@ export default function ResultsPage() {
             Copy resume
           </button>
         </p>
+        {resultsResumeContext.source === "snapshot-only" ? (
+          <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+            <p>{ANALYSIS_SNAPSHOT_CONTEXT_NOTICE}</p>
+            <button
+              type="button"
+              onClick={handleRestoreSnapshotAsResumeVersion}
+              disabled={isGeneratingSingleJobAnalysis}
+              className="mt-2 font-medium text-amber-950 underline-offset-2 hover:underline disabled:opacity-50"
+            >
+              Restore snapshot as resume version
+            </button>
+          </div>
+        ) : null}
         {copyResumeNotice ? <p className="mt-1 text-xs text-zinc-600">{copyResumeNotice}</p> : null}
+        {exportResumeNotice ? <p className="mt-1 text-xs text-zinc-600">{exportResumeNotice}</p> : null}
         {!hasResumeInput ? (
           <p className="mt-2 text-xs text-zinc-500">Add your resume on the Resume page to begin.</p>
         ) : null}
@@ -1476,14 +2289,15 @@ export default function ResultsPage() {
         subtitle="Your resume compared to this role—fit strength, resume gaps, and what to improve before you apply."
       />
 
-      {mounted ? (
-        <ActiveResumeCallout snapshot={resumeWorkspaceSnapshot} inAnalysisContext={hasReadyFitAnalysis} />
-      ) : null}
-
-      <AnalysisFeedbackBanner
-        status={analysisFeedbackStatus}
-        message={analysisFeedbackMessage}
+      <Step3StatusStrip
+        snapshot={resumeWorkspaceSnapshot}
+        resumeLabel={analyzedResumeVersionLabel}
+        hasReadyFitAnalysis={hasReadyFitAnalysis}
+        analysisStatus={analysisFeedbackStatus}
         progressStep={ANALYSIS_PROGRESS_STEPS[analysisProgressIndex]}
+        suppressRunningStatus={isGeneratingSingleJobAnalysis}
+        analysisResumeName={resultsResumeContext.resumeName}
+        activeResumeName={resultsResumeContext.activeResumeName}
       />
 
       <div className="space-y-6">
@@ -1666,6 +2480,10 @@ export default function ResultsPage() {
                       fitBand,
                     })}
                   </p>
+                  <p className="mt-2 text-xs text-zinc-500">
+                    Analyzed using:{" "}
+                    <span className="font-medium text-zinc-700">{analyzedResumeVersionLabel}</span>
+                  </p>
                   {encouragingEvidenceInsight ? (
                     <p className="mt-2 text-sm text-sky-900">{encouragingEvidenceInsight}</p>
                   ) : null}
@@ -1702,32 +2520,13 @@ export default function ResultsPage() {
               )}
             </section>
 
-            <section className="rounded-xl border border-rose-200 bg-rose-50/50 px-6 py-6">
-              <h2 className="text-base font-bold text-rose-950">Key gaps</h2>
-              <p className="mt-1.5 text-sm text-rose-900/80">
-                Actionable resume improvements to tackle before you apply.
+            <section className="rounded-xl border border-zinc-200/90 bg-zinc-50/60 px-6 py-6">
+              <h2 className="text-base font-bold text-zinc-900">Key gaps</h2>
+              <p className="mt-1.5 text-sm text-zinc-600">
+                Focused resume updates to tackle one at a time before you apply.
               </p>
-              {resultsBullets.resumeGaps.length > 0 ? (
-                <ul className="mt-4 space-y-3">
-                  {resultsBullets.resumeGaps.map((g) => (
-                    <li
-                      key={g}
-                      className="flex items-start gap-3 text-sm leading-relaxed text-zinc-800"
-                    >
-                      <span
-                        className="mt-2 h-2 w-2 shrink-0 rounded-full bg-rose-500"
-                        aria-hidden
-                      />
-                      {highlightMetricPlaceholders(g)}
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="mt-4 text-sm text-rose-900/90">
-                  No major resume gaps flagged—still worth a quick proofread before you apply.
-                </p>
-              )}
-              {renderImproveResumeActions()}
+              <KeyGapsList gaps={resultsBullets.resumeGaps} fitBand={fitBand} />
+              {renderTailorResumeActions()}
             </section>
 
             <section className="rounded-xl border border-zinc-200 bg-zinc-50/80 px-6 py-6">
@@ -1763,16 +2562,32 @@ export default function ResultsPage() {
                 ref={resumeEditorRef}
                 className="scroll-mt-24 rounded-xl border border-zinc-200/80 bg-white p-5"
               >
-                <h3 className="text-base font-semibold text-zinc-900">Improve My Resume</h3>
+                <h3 className="text-base font-semibold text-zinc-900">Edit manually</h3>
                 <p className="mt-1 text-sm text-zinc-600">
-                  Strengthen proof points for this role, then re-run analysis near Application summary.
+                  Edit the resume version used for this analysis, then save and re-run analysis.
+                  For a Coach Chris draft you can review first, use Tailor my resume above.
                 </p>
                 <p className="mt-1 text-xs text-zinc-500">
-                  Editing for:{" "}
+                  Editing resume version:{" "}
                   <span className="font-medium text-zinc-700">
-                    {job.title} at {job.company}
+                    {analyzedResumeVersionLabel}
                   </span>
+                  {" · "}
+                  {job.title} at {job.company}
                 </p>
+                {resultsResumeContext.differsFromActive ? (
+                  <p className="mt-1 text-xs text-zinc-500">
+                    This analysis used{" "}
+                    <span className="font-medium text-zinc-700">
+                      {resultsResumeContext.resumeName}
+                    </span>
+                    . Your current active resume is{" "}
+                    <span className="font-medium text-zinc-700">
+                      {resultsResumeContext.activeResumeName}
+                    </span>
+                    .
+                  </p>
+                ) : null}
 
                 <div className="mt-4 grid gap-4">
                   <div>
@@ -1944,9 +2759,59 @@ export default function ResultsPage() {
       <AnalysisFailureModal
         open={analysisFeedbackStatus === "failed"}
         message={analysisFeedbackMessage}
+        failureCode={analysisFailureCode}
         canRetry={analysisCanRetry}
         onRetryNow={handleRetryAnalysis}
         onRunLater={handleRunAnalysisLater}
+      />
+
+      <TailoredResumeDraftModal
+        open={tailoredDraftModalOpen}
+        jobTitle={job?.title ?? "this role"}
+        company={job?.company ?? "this company"}
+        sourceResumeName={tailoredDraftSourceResumeName}
+        lastUpdatedAt={tailoredDraftUpdatedAt}
+        draft={tailoredDraft}
+        isSaving={isSavingTailoredDraft}
+        isRerunningAnalysis={isRerunningAfterTailoredSave}
+        onSaveAndRerunAnalysis={(draft) => void handleSaveAndRerunTailoredDraft(draft)}
+        onSaveWithoutRerun={(draft) => void handleSaveTailoredDraftWithoutRerun(draft)}
+        onDraftChange={persistTailoredDraftToStorage}
+        onDiscardDraft={handleDiscardPendingTailoredDraft}
+        onCancel={handleCancelTailoredDraft}
+      />
+
+      <TailoredResumeDraftFailureModal
+        open={tailoredDraftFailureOpen}
+        message={tailoredDraftFailureMessage}
+        failureCode={tailoredDraftFailureCode}
+        canRetry={tailoredDraftCanRetry}
+        onRetryNow={handleRetryTailoredDraft}
+        onTryLater={handleTryLaterTailoredDraft}
+      />
+
+      <ExportTailoredDraftDialog
+        open={exportTailoredDraftDialogOpen}
+        intent={tailoredDraftActionIntent}
+        isSaving={isSavingTailoredDraft}
+        onSaveAndPrimary={() => void handleSaveAndApplyTailoredDraft()}
+        onUseSavedVersion={() => void handleApplySavedVersionFromPrompt()}
+        onCancel={() => setExportTailoredDraftDialogOpen(false)}
+      />
+
+      <ClearAllJobsConfirmDialog
+        open={clearSavedJobsDialogOpen}
+        title="Clear saved jobs?"
+        confirmLabel="Clear saved jobs"
+        onCancel={() => setClearSavedJobsDialogOpen(false)}
+        onConfirm={handleConfirmClearSavedJobs}
+      />
+
+      <RemoveJobConfirmDialog
+        open={removeJobDialogOpen}
+        jobTitle={job?.title ?? "this job"}
+        onCancel={() => setRemoveJobDialogOpen(false)}
+        onConfirm={handleConfirmRemoveCurrentJob}
       />
 
       {isGeneratingSingleJobAnalysis && (

@@ -4,6 +4,9 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ALPHA_SESSION_CHANGED_EVENT } from "@/lib/alpha-session-store";
 import {
+  formatResumeDateShort,
+} from "@/lib/resume-version-display";
+import {
   getResumePersistenceState,
   RESUME_STORAGE_CHANGED_EVENT,
 } from "@/lib/job-session-store";
@@ -19,6 +22,9 @@ export function ActiveResumeIndicator() {
           upload: null,
           savedAt: null,
           parsedAt: null,
+          createdAt: null,
+          updatedAt: null,
+          sourceFileName: null,
           isSavedForAnalysis: false,
           needsParseReview: false,
         }
@@ -51,9 +57,13 @@ export function ActiveResumeIndicator() {
   }
 
   const preview = buildResumePreviewText(persistence.input);
+  const updatedShort = formatResumeDateShort(persistence.updatedAt);
 
   return (
-    <p className="hidden max-w-xs truncate text-[11px] text-zinc-600 lg:block" title={preview}>
+    <p
+      className="hidden max-w-xs truncate text-[11px] text-zinc-600 lg:block"
+      title={[preview, updatedShort ? `Last updated ${updatedShort}` : null].filter(Boolean).join(" · ")}
+    >
       {persistence.isSavedForAnalysis ? (
         <span className="font-medium text-emerald-800">Active resume for this analysis:</span>
       ) : (
@@ -63,6 +73,7 @@ export function ActiveResumeIndicator() {
       {persistence.upload?.fileName ? (
         <span className="text-zinc-500"> · {persistence.upload.fileName}</span>
       ) : null}
+      {updatedShort ? <span className="text-zinc-500"> · updated {updatedShort}</span> : null}
     </p>
   );
 }

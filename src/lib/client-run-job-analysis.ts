@@ -1,7 +1,11 @@
 import { getProviderConfig, type AnalyzeSelectedJobOutput } from "@/lib/ai";
 import { buildAnalysisInputFingerprint } from "@/lib/analysis-input-fingerprint";
 import {
-  ANALYSIS_TEMPORARY_FAILURE_MESSAGE,
+  buildAnalysisResumeSnapshotFromInput,
+  enrichComputedJobAnalysisWithResumeLink,
+} from "@/lib/analysis-resume-linkage";
+import {
+  messageForAnalysisFailureCode,
   type AnalysisFailureCode,
   parseAnalysisFailureResponse,
   toUserFacingAnalysisError,
@@ -27,6 +31,7 @@ export type RunJobAnalysisResult =
       ok: false;
       message: string;
       retryable: boolean;
+      code?: AnalysisFailureCode;
     };
 
 export function calculateResumeCompleteness(input: {
@@ -69,6 +74,11 @@ export async function runJobAnalysisForPosting(options: {
   existingReadyAnalysis?: JobAnalysis;
   optimizeData?: OptimizeJobData;
   forceRefresh?: boolean;
+  resumeMeta?: {
+    id?: string | null;
+    name?: string | null;
+  };
+  candidateName?: string | null;
 }): Promise<RunJobAnalysisResult> {
   const { job, resumeContext, resumeCompleteness, storedComputed, existingReadyAnalysis, optimizeData } =
     options;
@@ -81,7 +91,12 @@ export async function runJobAnalysisForPosting(options: {
   });
 
   if (!requestValidation.ok) {
-    return { ok: false, message: requestValidation.message, retryable: false };
+    return {
+      ok: false,
+      message: requestValidation.message,
+      retryable: false,
+      code: requestValidation.code,
+    };
   }
 
   const inputFingerprint = buildAnalysisInputFingerprint({
@@ -93,7 +108,9 @@ export async function runJobAnalysisForPosting(options: {
   const shouldUseCachedAnalysis =
     !options.forceRefresh &&
     storedComputed?.analysisState === "ready" &&
-    storedComputed.inputFingerprint === inputFingerprint;
+    storedComputed.inputFingerprint === inputFingerprint &&
+    (!storedComputed.resumeVersionId ||
+      storedComputed.resumeVersionId === options.resumeMeta?.id);
 
   if (shouldUseCachedAnalysis) {
     return { ok: true, analysis: storedComputed, fromCache: true };
@@ -113,6 +130,7 @@ export async function runJobAnalysisForPosting(options: {
           requiredSkills: job.requiredSkills,
         },
         resumeContext,
+        resumeMeta: options.resumeMeta,
         fitContext: existingReadyAnalysis
           ? {
               fit: existingReadyAnalysis.fit,
@@ -146,27 +164,33 @@ export async function runJobAnalysisForPosting(options: {
       } catch {
         failureBody = null;
       }
-      const failure = parseAnalysisFailureResponse(
-        response.status,
-        failureBody
-          ? { ...failureBody, code: failureBody.code as AnalysisFailureCode | undefined }
-          : null,
-      );
+      const failure = parseAnalysisFailureResponse(response.status, failureBody);
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("[runJobAnalysisForPosting] analysis_api_failed", {
+          status: response.status,
+          code: failure.code,
+          jobId: job.id,
+          activeResumeId: options.resumeMeta?.id ?? null,
+          activeResumeName: options.resumeMeta?.name ?? null,
+        });
+      }
       return {
         ok: false,
-        message: failure.retryable ? ANALYSIS_TEMPORARY_FAILURE_MESSAGE : failure.message,
+        message: failure.message,
         retryable: failure.retryable,
+        code: failure.code,
       };
     }
 
     const payload = (await response.json()) as AnalyzeSelectedJobOutput;
     const unavailableMessage = getProviderUnavailableMessage(payload);
     if (unavailableMessage) {
-      const canRetry = !unavailableMessage.toLowerCase().includes("gemini_api_key");
+      const mapped = messageForAnalysisFailureCode("api_key_missing");
       return {
         ok: false,
-        message: canRetry ? ANALYSIS_TEMPORARY_FAILURE_MESSAGE : unavailableMessage,
-        retryable: canRetry,
+        message: mapped.message,
+        retryable: mapped.retryable,
+        code: "api_key_missing",
       };
     }
 
@@ -178,21 +202,44 @@ export async function runJobAnalysisForPosting(options: {
       evidenceItems: computedBase.strengths,
     });
 
-    return {
-      ok: true,
-      fromCache: false,
-      analysis: {
+    const resumeSnapshot = buildAnalysisResumeSnapshotFromInput({
+      summary: resumeContext.summary,
+      skills: resumeContext.skills.join(", "),
+      highlights: resumeContext.experienceHighlights.join("\n"),
+      education: resumeContext.educationEntries.join("\n"),
+    });
+
+    const linkedAnalysis = enrichComputedJobAnalysisWithResumeLink(
+      {
         ...computedBase,
         inputFingerprint,
         confidenceLevel: nextConfidence,
       },
+      {
+        job,
+        resumeVersion:
+          options.resumeMeta?.id && options.resumeMeta.name
+            ? { id: options.resumeMeta.id, name: options.resumeMeta.name }
+            : options.resumeMeta?.id
+              ? { id: options.resumeMeta.id, name: "Untitled resume" }
+              : null,
+        resumeSnapshot,
+        candidateName: options.candidateName,
+      },
+    );
+
+    return {
+      ok: true,
+      fromCache: false,
+      analysis: linkedAnalysis,
     };
   } catch (error) {
     const failure = toUserFacingAnalysisError(error);
     return {
       ok: false,
-      message: failure.retryable ? ANALYSIS_TEMPORARY_FAILURE_MESSAGE : failure.message,
+      message: failure.message,
       retryable: failure.retryable,
+      code: failure.code,
     };
   }
 }

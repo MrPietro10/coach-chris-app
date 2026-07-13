@@ -2,9 +2,18 @@ import {
   readAlphaScopedStorageItem,
   removeAlphaScopedStorageItem,
   type AlphaScopedStorageResource,
-  writeAlphaScopedStorageItem,
 } from "@/lib/alpha-scoped-storage";
-import { clearJobPipelineState, getJobApplicationNotes, getStoredJobStatuses } from "@/lib/job-pipeline-store";
+import { writeScopedJson, writeScopedPlainItem } from "@/lib/alpha-scoped-json-write";
+import {
+  clearAllPendingTailoredDrafts,
+  clearPendingTailoredDraftsForJobs,
+} from "@/lib/pending-tailored-drafts";
+import { removeTailoredResumesForJobs } from "@/lib/resume-store";
+import {
+  sanitizeAnalysisResumeSnapshot,
+  type AnalysisResumeSnapshot,
+} from "@/lib/analysis-resume-linkage";
+import { clearAllJobPipelineState, clearJobPipelineState, getJobApplicationNotes, getStoredJobStatuses } from "@/lib/job-pipeline-store";
 import { resolveJobStatus } from "@/lib/job-pipeline";
 import {
   buildLatestAnalysisRef,
@@ -21,6 +30,7 @@ import type {
   JobPosting,
   ProfileData,
 } from "@/types/coach";
+import { jobs as defaultWorkspaceJobs } from "@/mock-data/career-coach";
 
 export type { LatestAnalysisReference, StoredJobRecord, StoredJobView } from "@/lib/stored-job";
 
@@ -34,6 +44,14 @@ export type ComputedJobAnalysis = JobAnalysis & {
   missingEvidence: string[];
   inputFingerprint?: string;
   confidenceLevel?: ConfidenceLevel;
+  resumeVersionId?: string;
+  resumeVersionName?: string;
+  jobTitle?: string;
+  company?: string;
+  candidateName?: string;
+  createdAt?: string;
+  snapshotCreatedAt?: string;
+  resumeSnapshot?: AnalysisResumeSnapshot;
 };
 export type ComputedJobAnalysesState = Record<string, ComputedJobAnalysis>;
 
@@ -54,10 +72,6 @@ function readScopedJson<T>(resource: AlphaScopedStorageResource): T | null {
   return parseJson<T>(readAlphaScopedStorageItem(resource));
 }
 
-function writeScopedJson(resource: AlphaScopedStorageResource, value: unknown): void {
-  writeAlphaScopedStorageItem(resource, JSON.stringify(value));
-}
-
 function removeScoped(resource: AlphaScopedStorageResource): void {
   removeAlphaScopedStorageItem(resource);
 }
@@ -71,8 +85,8 @@ function readStoredJobRecords(): StoredJobRecord[] {
     .filter((entry): entry is StoredJobRecord => entry !== null);
 }
 
-function writeStoredJobRecords(records: StoredJobRecord[]): void {
-  writeScopedJson("jobs", records);
+function writeStoredJobRecords(records: StoredJobRecord[]): boolean {
+  return writeScopedJson("jobs", records);
 }
 
 function syncLatestAnalysisRefOnRecord(
@@ -126,7 +140,9 @@ export function saveUserJob(
   const existing = readStoredJobRecords();
   if (existing.some((item) => item.id === job.id)) return null;
   const record = jobPostingToStoredRecord(job, { sourceUrl: options?.sourceUrl ?? job.jobUrl });
-  writeStoredJobRecords([record, ...existing]);
+  if (!writeStoredJobRecords([record, ...existing])) {
+    return null;
+  }
   dispatchJobWorkspaceChanged();
   return record;
 }
@@ -174,7 +190,9 @@ export function saveImportedUserJobs(rows: SpreadsheetJobImportInput[]): JobPost
 
   if (imported.length === 0) return [];
   const importedRecords = imported.map((job) => jobPostingToStoredRecord(job));
-  writeStoredJobRecords([...importedRecords, ...existing]);
+  if (!writeStoredJobRecords([...importedRecords, ...existing])) {
+    return [];
+  }
   dispatchJobWorkspaceChanged();
   return imported;
 }
@@ -218,6 +236,16 @@ export function getAllStoredJobs(baseJobs: JobPosting[]): JobPosting[] {
   return [...visibleBaseJobs, ...dedupedUserJobs];
 }
 
+/** Whether a job id is still visible in the workspace (user-added or demo/sample). */
+export function isJobInWorkspace(
+  jobId: string | null | undefined,
+  baseJobs: JobPosting[] = defaultWorkspaceJobs,
+): boolean {
+  const trimmed = jobId?.trim();
+  if (!trimmed) return false;
+  return getAllStoredJobs(baseJobs).some((job) => job.id === trimmed);
+}
+
 export function buildSessionJobId(prefix = "job_user"): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -230,7 +258,7 @@ export function getSelectedJobId(): string | null {
 
 export function setSelectedJobId(jobId: string): void {
   if (!isBrowser()) return;
-  writeAlphaScopedStorageItem("selected-job", jobId);
+  writeScopedPlainItem("selected-job", jobId);
   if (isBrowser()) {
     window.dispatchEvent(new Event("career-coach:active-job-changed"));
   }
@@ -238,8 +266,46 @@ export function setSelectedJobId(jobId: string): void {
 
 export function markPendingAnalysisJobId(jobId: string): void {
   if (!isBrowser()) return;
-  writeAlphaScopedStorageItem("pending-analysis-job", jobId);
+  writeScopedPlainItem("pending-analysis-job", jobId);
   window.dispatchEvent(new Event("career-coach:active-job-changed"));
+}
+
+export function markPendingAnalysisResumeId(resumeId: string): void {
+  if (!isBrowser()) return;
+  writeScopedPlainItem("pending-analysis-resume-id", resumeId);
+}
+
+export function markPendingAnalysisContext(jobId: string, resumeId?: string | null): void {
+  markPendingAnalysisJobId(jobId);
+  if (resumeId?.trim()) {
+    markPendingAnalysisResumeId(resumeId.trim());
+  }
+}
+
+export function getPendingAnalysisContext(): {
+  jobId: string | null;
+  resumeId: string | null;
+} {
+  return {
+    jobId: getPendingAnalysisJobId(),
+    resumeId: getPendingAnalysisResumeId(),
+  };
+}
+
+/** Clear pending job + resume only after analysis succeeds or workspace reset. */
+export function clearPendingAnalysisContext(): void {
+  clearPendingAnalysisJobId();
+}
+
+export function getPendingAnalysisResumeId(): string | null {
+  if (!isBrowser()) return null;
+  const value = readAlphaScopedStorageItem("pending-analysis-resume-id");
+  return value && value.trim().length > 0 ? value : null;
+}
+
+export function clearPendingAnalysisResumeId(): void {
+  if (!isBrowser()) return;
+  removeScoped("pending-analysis-resume-id");
 }
 
 export function getPendingAnalysisJobId(): string | null {
@@ -251,6 +317,7 @@ export function getPendingAnalysisJobId(): string | null {
 export function clearPendingAnalysisJobId(): void {
   if (!isBrowser()) return;
   removeScoped("pending-analysis-job");
+  clearPendingAnalysisResumeId();
   window.dispatchEvent(new Event("career-coach:active-job-changed"));
 }
 
@@ -288,6 +355,10 @@ function sanitizeFit(value: unknown): FitCategory | null {
     return value;
   }
   return null;
+}
+
+function isIsoTimestamp(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && !Number.isNaN(Date.parse(value));
 }
 
 function sanitizeComputedJobAnalysis(
@@ -334,6 +405,33 @@ function sanitizeComputedJobAnalysis(
         ? raw.inputFingerprint.trim()
         : undefined,
     confidenceLevel,
+    resumeVersionId:
+      typeof raw.resumeVersionId === "string" && raw.resumeVersionId.trim().length > 0
+        ? raw.resumeVersionId.trim()
+        : undefined,
+    resumeVersionName:
+      typeof raw.resumeVersionName === "string" && raw.resumeVersionName.trim().length > 0
+        ? raw.resumeVersionName.trim()
+        : undefined,
+    jobTitle:
+      typeof raw.jobTitle === "string" && raw.jobTitle.trim().length > 0
+        ? raw.jobTitle.trim()
+        : undefined,
+    company:
+      typeof raw.company === "string" && raw.company.trim().length > 0
+        ? raw.company.trim()
+        : undefined,
+    candidateName:
+      typeof raw.candidateName === "string" && raw.candidateName.trim().length > 0
+        ? raw.candidateName.trim()
+        : undefined,
+    createdAt: isIsoTimestamp(raw.createdAt) ? raw.createdAt : undefined,
+    snapshotCreatedAt: isIsoTimestamp(raw.snapshotCreatedAt)
+      ? raw.snapshotCreatedAt
+      : isIsoTimestamp(raw.createdAt)
+        ? raw.createdAt
+        : undefined,
+    resumeSnapshot: sanitizeAnalysisResumeSnapshot(raw.resumeSnapshot),
   };
 }
 
@@ -349,11 +447,13 @@ export function getComputedJobAnalysesState(): ComputedJobAnalysesState {
   return out;
 }
 
-export function setComputedJobAnalysis(analysis: ComputedJobAnalysis): void {
-  if (!isBrowser()) return;
+export function setComputedJobAnalysis(analysis: ComputedJobAnalysis): boolean {
+  if (!isBrowser()) return false;
   const current = getComputedJobAnalysesState();
   current[analysis.jobId] = analysis;
-  writeScopedJson("analyses", current);
+  if (!writeScopedJson("analyses", current)) {
+    return false;
+  }
 
   const records = readStoredJobRecords();
   const index = records.findIndex((record) => record.id === analysis.jobId);
@@ -361,6 +461,7 @@ export function setComputedJobAnalysis(analysis: ComputedJobAnalysis): void {
     records[index] = syncLatestAnalysisRefOnRecord(records[index], analysis);
     writeStoredJobRecords(records);
   }
+  return true;
 }
 
 export function clearJobAnalysisState(jobId: string): void {
@@ -375,6 +476,56 @@ export function clearJobAnalysisState(jobId: string): void {
   if (jobId in computed) {
     delete computed[jobId];
     writeScopedJson("analyses", computed);
+  }
+}
+
+function shouldDropStoredAnalysisJobId(
+  jobId: string,
+  storedJobIds: Set<string>,
+  removedJobIds: Set<string>,
+): boolean {
+  if (removedJobIds.has(jobId)) return true;
+  if (jobId.startsWith("job_user_") || jobId.startsWith("job_import_")) {
+    return !storedJobIds.has(jobId);
+  }
+  return false;
+}
+
+/** Remove analysis entries for hidden or deleted jobs while preserving active demo analyses. */
+export function pruneAnalysesWithoutSavedJobs(): void {
+  if (!isBrowser()) return;
+
+  const storedJobIds = new Set(readStoredJobRecords().map((record) => record.id));
+  const removedJobIds = getRemovedJobIds();
+  const drop = (jobId: string) =>
+    shouldDropStoredAnalysisJobId(jobId, storedJobIds, removedJobIds);
+
+  const analyzed = getAnalyzedJobsState();
+  let analyzedChanged = false;
+  const nextAnalyzed: AnalyzedJobsState = {};
+  for (const [jobId, value] of Object.entries(analyzed)) {
+    if (drop(jobId)) {
+      analyzedChanged = true;
+      continue;
+    }
+    nextAnalyzed[jobId] = value;
+  }
+  if (analyzedChanged) {
+    writeScopedJson("analyzed-jobs", nextAnalyzed);
+  }
+
+  const computed = getComputedJobAnalysesState();
+  let computedChanged = false;
+  const nextComputed: ComputedJobAnalysesState = {};
+  for (const [jobId, value] of Object.entries(computed)) {
+    if (drop(jobId)) {
+      computedChanged = true;
+      continue;
+    }
+    nextComputed[jobId] = value;
+  }
+  if (computedChanged) {
+    writeScopedJson("analyses", nextComputed);
   }
 }
 
@@ -409,7 +560,9 @@ export function updateUserJob(
     return updated;
   });
   if (!changed) return false;
-  writeStoredJobRecords(next);
+  if (!writeStoredJobRecords(next)) {
+    return false;
+  }
   clearJobAnalysisState(jobId);
   dispatchJobWorkspaceChanged();
   return true;
@@ -427,6 +580,7 @@ export function removeJobFromWorkspace(jobId: string): void {
   addRemovedJobId(jobId);
   clearJobAnalysisState(jobId);
   clearJobPipelineState(jobId);
+  clearPendingTailoredDraftsForJobs([jobId]);
 
   if (getSelectedJobId() === jobId) {
     clearSelectedJobId();
@@ -438,29 +592,87 @@ export function removeJobFromWorkspace(jobId: string): void {
   dispatchJobWorkspaceChanged();
 }
 
-export function deleteUserJob(jobId: string): void {
+export function deleteUserJob(
+  jobId: string,
+  options?: { removeLinkedTailoredResumes?: boolean },
+): void {
+  if (options?.removeLinkedTailoredResumes) {
+    removeTailoredResumesForJobs([jobId]);
+  }
   removeJobFromWorkspace(jobId);
 }
 
 /** Remove all alpha-scoped user jobs and their analysis records. Returns count removed. */
-export function clearAllUserJobs(): number {
+export function clearAllUserJobs(options?: { removeLinkedTailoredResumes?: boolean }): number {
   if (!isBrowser()) return 0;
   const userJobs = getStoredUserJobs();
   if (userJobs.length === 0) return 0;
 
+  const userJobIds = userJobs.map((job) => job.id);
   for (const job of userJobs) {
     clearJobAnalysisState(job.id);
     clearJobPipelineState(job.id);
   }
+  clearPendingTailoredDraftsForJobs(userJobIds);
+  if (options?.removeLinkedTailoredResumes) {
+    removeTailoredResumesForJobs(userJobIds);
+  }
   writeStoredJobRecords([]);
+  pruneAnalysesWithoutSavedJobs();
 
   const selectedId = getSelectedJobId();
   if (selectedId && userJobs.some((job) => job.id === selectedId)) {
     clearSelectedJobId();
   }
 
+  const pendingJobId = getPendingAnalysisJobId();
+  if (pendingJobId && userJobs.some((job) => job.id === pendingJobId)) {
+    clearPendingAnalysisJobId();
+  }
+
   dispatchJobWorkspaceChanged();
   return userJobs.length;
+}
+
+/** Clear every job from the workspace view, including demo roles, analysis, and pipeline state. */
+export function clearAllJobsFromWorkspace(
+  baseJobs: JobPosting[] = defaultWorkspaceJobs,
+  options?: { removeLinkedTailoredResumes?: boolean },
+): number {
+  if (!isBrowser()) return 0;
+
+  const visibleJobs = getAllStoredJobs(baseJobs);
+  const count = visibleJobs.length;
+  if (count === 0) return 0;
+
+  const visibleJobIds = visibleJobs.map((job) => job.id);
+
+  writeStoredJobRecords([]);
+
+  const removed = getRemovedJobIds();
+  for (const job of baseJobs) {
+    removed.add(job.id);
+  }
+  for (const job of visibleJobs) {
+    removed.add(job.id);
+  }
+  writeScopedJson("removed-jobs", [...removed]);
+
+  writeScopedJson("analyses", {});
+  writeScopedJson("analyzed-jobs", {});
+  clearAllJobPipelineState();
+  clearAllPendingTailoredDrafts();
+  if (options?.removeLinkedTailoredResumes) {
+    removeTailoredResumesForJobs(visibleJobIds);
+  }
+  pruneAnalysesWithoutSavedJobs();
+
+  clearSelectedJobId();
+  clearPendingAnalysisJobId();
+  dispatchJobWorkspaceChanged();
+  window.dispatchEvent(new Event("career-coach:active-job-changed"));
+
+  return count;
 }
 
 export type {
@@ -474,12 +686,17 @@ export {
   clearStoredResume,
   clearStoredResumeUploadState,
   createResume,
+  createResumeVersionFromInput,
+  confirmUploadedResumeVersion,
+  createTailoredResumeVersion,
   duplicateResume,
   getActiveResumeId,
   getActiveResumeLabel,
   getActiveResumeRecord,
   getAllResumeRecords,
+  getLatestTailoredResumeForJob,
   getResumeParsedAt,
+  removeTailoredResumesForJobs,
   getResumePersistenceState,
   getResumeSavedAt,
   getResumeWorkspaceSnapshot,

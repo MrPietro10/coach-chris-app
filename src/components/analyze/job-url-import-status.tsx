@@ -7,9 +7,14 @@ type JobUrlImportStatusProps = {
   title?: string | null;
   message?: string | null;
   hint?: string | null;
+  subtle?: boolean;
 };
 
-function statusStyles(status: JobUrlImportFlowStatus): string {
+function statusStyles(status: JobUrlImportFlowStatus, subtle: boolean): string {
+  if (subtle && (status === "import_failure" || status === "unsupported")) {
+    return "border-zinc-200 bg-zinc-50 text-zinc-600";
+  }
+
   switch (status) {
     case "importing":
       return "border-sky-200 bg-sky-50 text-sky-900";
@@ -44,6 +49,7 @@ export function JobUrlImportStatus({
   title,
   message,
   hint,
+  subtle = false,
 }: JobUrlImportStatusProps) {
   if (status === "idle") {
     return null;
@@ -51,21 +57,23 @@ export function JobUrlImportStatus({
 
   return (
     <div
-      className={`mt-3 rounded-lg border px-3 py-2.5 text-xs ${statusStyles(status)}`}
+      className={`mt-3 rounded-lg border px-3 py-2.5 text-xs ${statusStyles(status, subtle)}`}
       role="status"
       aria-live="polite"
     >
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="font-semibold uppercase tracking-wide">{statusLabel(status)}</span>
-        {status === "importing" ? (
-          <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
-        ) : null}
-      </div>
-      {title && (status === "import_failure" || status === "unsupported") ? (
+      {!subtle ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-semibold uppercase tracking-wide">{statusLabel(status)}</span>
+          {status === "importing" ? (
+            <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+          ) : null}
+        </div>
+      ) : null}
+      {!subtle && title && (status === "import_failure" || status === "unsupported") ? (
         <p className="mt-1.5 font-medium">{title}</p>
       ) : null}
-      {message ? <p className="mt-1">{message}</p> : null}
-      {hint ? <p className="mt-1 opacity-90">{hint}</p> : null}
+      {message ? <p className={subtle ? "" : "mt-1"}>{message}</p> : null}
+      {hint ? <p className={`mt-1 ${subtle ? "text-zinc-500" : "opacity-90"}`}>{hint}</p> : null}
       {status === "import_success" ? (
         <p className="mt-1 opacity-90">Review the description below, then run fit analysis.</p>
       ) : null}

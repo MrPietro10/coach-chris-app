@@ -6,6 +6,8 @@ import { ChrisAssistant } from "@/components/layout/chris-assistant";
 import { ActiveJobIndicator } from "@/components/jobs/active-job-indicator";
 import { ActiveResumeIndicator } from "@/components/resume/active-resume-indicator";
 import { ExportUsageLogsButton } from "@/components/layout/export-usage-logs-button";
+import { StorageFailureNotice } from "@/components/layout/storage-failure-notice";
+import { runAlphaStorageMigration } from "@/lib/alpha-storage-hygiene";
 import {
   ADMIN_ALPHA_STORAGE_NAMESPACE,
   clearActiveAlphaStorageNamespace,
@@ -26,6 +28,7 @@ export function AppShell({
   useEffect(() => {
     if (!isAdmin) return;
     setActiveAlphaStorageNamespace(ADMIN_ALPHA_STORAGE_NAMESPACE);
+    runAlphaStorageMigration();
   }, [isAdmin]);
 
   function handleSwitchUser() {
@@ -35,6 +38,7 @@ export function AppShell({
 
   return (
     <div className="min-h-screen">
+      <StorageFailureNotice />
       <header className="sticky top-0 z-40 border-b border-zinc-200/60 bg-white/90 backdrop-blur-sm">
         <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-5 py-3">
           <div className="flex min-w-0 items-center gap-2">

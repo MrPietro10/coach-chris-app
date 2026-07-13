@@ -1,10 +1,15 @@
 "use client";
 
-import { ANALYSIS_TEMPORARY_FAILURE_MESSAGE } from "@/lib/analysis-flow-messages";
+import {
+  messageForAnalysisFailureCode,
+  normalizeAnalysisFailureCode,
+  type AnalysisFailureCode,
+} from "@/lib/analysis-flow-messages";
 
 type AnalysisFailureModalProps = {
   open: boolean;
   message?: string | null;
+  failureCode?: AnalysisFailureCode | string | null;
   canRetry?: boolean;
   onRetryNow: () => void;
   onRunLater: () => void;
@@ -13,6 +18,7 @@ type AnalysisFailureModalProps = {
 export function AnalysisFailureModal({
   open,
   message,
+  failureCode,
   canRetry = true,
   onRetryNow,
   onRunLater,
@@ -21,7 +27,11 @@ export function AnalysisFailureModal({
     return null;
   }
 
-  const displayMessage = message?.trim() || ANALYSIS_TEMPORARY_FAILURE_MESSAGE;
+  const normalizedCode = normalizeAnalysisFailureCode(failureCode ?? undefined);
+  const mappedMessage = normalizedCode
+    ? messageForAnalysisFailureCode(normalizedCode).message
+    : null;
+  const displayMessage = message?.trim() || mappedMessage || messageForAnalysisFailureCode("unknown_error").message;
 
   return (
     <div

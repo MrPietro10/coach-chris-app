@@ -1,5 +1,7 @@
 import type { ComputedJobAnalysesState, ComputedJobAnalysis } from "@/lib/job-session-store";
-import type { JobAnalysis } from "@/types/coach";
+import { getAllStoredJobs, getComputedJobAnalysesState } from "@/lib/job-session-store";
+import { analyses, jobs } from "@/mock-data/career-coach";
+import type { JobAnalysis, JobPosting } from "@/types/coach";
 
 export function getReadyAnalysisForJob(
   jobId: string,
@@ -16,4 +18,18 @@ export function getStoredComputedAnalysis(
   computedAnalyses: ComputedJobAnalysesState,
 ): ComputedJobAnalysis | undefined {
   return computedAnalyses[jobId];
+}
+
+export function workspaceHasReadyFitAnalysis(
+  baseJobs: JobPosting[] = jobs,
+  staticAnalyses: JobAnalysis[] = analyses,
+): boolean {
+  if (typeof window === "undefined") return false;
+
+  const trackedJobs = getAllStoredJobs(baseJobs);
+  const computedAnalyses = getComputedJobAnalysesState();
+
+  return trackedJobs.some((job) =>
+    Boolean(getReadyAnalysisForJob(job.id, computedAnalyses, staticAnalyses)),
+  );
 }

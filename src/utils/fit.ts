@@ -29,7 +29,7 @@ export const FIT_CATEGORY_META: Record<FitCategory, FitCategoryMeta> = {
   "Backup Fit": {
     label: "Backup Fit",
     shortLabel: "Backup",
-    description: "Relevant experience exists, but preference alignment is weaker.",
+    description: "Solid overlap with this role—targeted resume updates can make the match clearer.",
   },
   "Strong Fit": {
     label: "Strong Fit",
@@ -66,7 +66,7 @@ export function fitVerdict(fit: FitCategory): string {
     case "Strong Fit":
       return "Strong match — worth prioritizing";
     case "Backup Fit":
-      return "Good overlap — apply if the role fits your goals";
+      return "Good overlap—worth tailoring your resume, then applying if the role fits your goals";
     case "Aspirational Fit":
       return "Stretch role — apply if you can close the gaps below";
     case "Low Fit":

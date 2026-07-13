@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useIsClient } from "@/hooks/use-is-client";
 import { JobSpreadsheetImport } from "@/components/batch/job-spreadsheet-import";
+import { ClearAllJobsConfirmDialog } from "@/components/jobs/clear-all-jobs-confirm-dialog";
+import { RemoveJobConfirmDialog } from "@/components/jobs/remove-job-confirm-dialog";
 import { JobApplicationTracking } from "@/components/jobs/job-application-tracking";
 import { JobActiveBadge } from "@/components/jobs/job-active-badge";
 import { FitBadge } from "@/components/ui/fit-badge";
@@ -15,10 +17,12 @@ import {
   setActiveJob,
 } from "@/lib/active-job";
 import {
+  clearAllJobsFromWorkspace,
   updateUserJob,
   getComputedJobAnalysesState,
   deleteUserJob,
   getAllStoredJobs,
+  JOB_WORKSPACE_CHANGED_EVENT,
   type ComputedJobAnalysesState,
 } from "@/lib/job-session-store";
 import { JOB_PIPELINE_UPDATED_EVENT } from "@/lib/job-pipeline-store";
@@ -60,6 +64,9 @@ export default function BatchPage() {
   const [editLocation, setEditLocation] = useState("");
   const [editDescription, setEditDescription] = useState("");
   const [navigatingJobId, setNavigatingJobId] = useState<string | null>(null);
+  const [clearAllDialogOpen, setClearAllDialogOpen] = useState(false);
+  const [clearAllNotice, setClearAllNotice] = useState<string | null>(null);
+  const [pendingRemoveJobId, setPendingRemoveJobId] = useState<string | null>(null);
   const [activeSnapshot, setActiveSnapshot] = useState(() =>
     typeof window === "undefined"
       ? { activeJobId: null, analyzingJobId: null }
@@ -80,6 +87,7 @@ export default function BatchPage() {
     window.addEventListener("focus", refresh);
     window.addEventListener("career-coach:analysis-updated", refresh);
     window.addEventListener(JOB_PIPELINE_UPDATED_EVENT, refresh);
+    window.addEventListener(JOB_WORKSPACE_CHANGED_EVENT, refresh);
     const refreshActive = () => {
       const snapshot = getActiveJobSnapshot(jobs);
       setActiveSnapshot({
@@ -94,6 +102,7 @@ export default function BatchPage() {
       window.removeEventListener("focus", refresh);
       window.removeEventListener("career-coach:analysis-updated", refresh);
       window.removeEventListener(JOB_PIPELINE_UPDATED_EVENT, refresh);
+      window.removeEventListener(JOB_WORKSPACE_CHANGED_EVENT, refresh);
       window.removeEventListener(ACTIVE_JOB_CHANGED_EVENT, refreshActive);
     };
   }, []);
@@ -104,7 +113,36 @@ export default function BatchPage() {
     setAllJobs(getAllStoredJobs(jobs));
     setComputedAnalysesState(getComputedJobAnalysesState());
     setJobStatuses(getStoredJobStatuses());
+    const snapshot = getActiveJobSnapshot(jobs);
+    setActiveSnapshot({
+      activeJobId: snapshot.activeJobId,
+      analyzingJobId: snapshot.analyzingJobId,
+    });
   }
+
+  function handleConfirmClearAllJobs(options: { removeLinkedTailoredResumes: boolean }) {
+    clearAllJobsFromWorkspace(jobs, options);
+    setClearAllDialogOpen(false);
+    setClearAllNotice(
+      options.removeLinkedTailoredResumes
+        ? "Jobs cleared. Linked tailored resumes were removed."
+        : "Jobs cleared. You can add a new job anytime.",
+    );
+    refreshData();
+    notifySessionDataChanged();
+  }
+
+  function handleConfirmRemoveJob(options: { removeLinkedTailoredResumes: boolean }) {
+    if (!pendingRemoveJobId) return;
+    deleteUserJob(pendingRemoveJobId, options);
+    setPendingRemoveJobId(null);
+    refreshData();
+    notifySessionDataChanged();
+  }
+
+  const pendingRemoveJob = pendingRemoveJobId
+    ? allJobs.find((job) => job.id === pendingRemoveJobId)
+    : null;
 
   const urlEditId = searchParams.get("edit")?.trim() || null;
 
@@ -147,12 +185,28 @@ export default function BatchPage() {
       <section className="mt-5 rounded-xl border border-zinc-200/80 bg-white p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-sm font-medium text-zinc-900">Saved jobs</h2>
-          {activeSnapshot.activeJobId ? (
-            <p className="text-xs text-zinc-500">
-              Active job is highlighted. Switch anytime — your pipeline and notes stay per role.
-            </p>
-          ) : null}
+          <div className="flex flex-wrap items-center gap-2">
+            {activeSnapshot.activeJobId ? (
+              <p className="text-xs text-zinc-500">
+                Active job is highlighted. Switch anytime — your pipeline and notes stay per role.
+              </p>
+            ) : null}
+            {allJobs.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => setClearAllDialogOpen(true)}
+                className="rounded-lg border border-zinc-200 bg-white px-2.5 py-1 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-50 hover:text-zinc-800"
+              >
+                Clear all jobs
+              </button>
+            ) : null}
+          </div>
         </div>
+        {clearAllNotice ? (
+          <p className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50/80 px-3 py-2 text-xs text-emerald-900">
+            {clearAllNotice}
+          </p>
+        ) : null}
         {allJobs.length === 0 ? (
           <div className="mt-3 rounded-lg border border-zinc-100 bg-zinc-50/60 px-4 py-4">
             <p className="text-sm text-zinc-600">Add a job description to analyze against your resume.</p>
@@ -276,12 +330,7 @@ export default function BatchPage() {
                       type="button"
                       aria-label={`Remove ${job.title}`}
                       title="Remove job"
-                      onClick={() => {
-                        const ok = confirm("Remove this job from your workspace?");
-                        if (!ok) return;
-                        deleteUserJob(job.id);
-                        refreshData();
-                      }}
+                      onClick={() => setPendingRemoveJobId(job.id)}
                       className="rounded-md border border-zinc-200 px-2 py-1 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-50 hover:text-zinc-700"
                     >
                       ×
@@ -377,6 +426,19 @@ export default function BatchPage() {
         </ul>
         )}
       </section>
+
+      <ClearAllJobsConfirmDialog
+        open={clearAllDialogOpen}
+        onCancel={() => setClearAllDialogOpen(false)}
+        onConfirm={handleConfirmClearAllJobs}
+      />
+
+      <RemoveJobConfirmDialog
+        open={Boolean(pendingRemoveJob)}
+        jobTitle={pendingRemoveJob?.title ?? "this job"}
+        onCancel={() => setPendingRemoveJobId(null)}
+        onConfirm={handleConfirmRemoveJob}
+      />
     </>
   );
 }

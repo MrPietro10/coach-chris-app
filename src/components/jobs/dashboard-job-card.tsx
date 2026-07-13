@@ -44,8 +44,6 @@ export function DashboardJobCard({
   }
 
   function handleRemove(): void {
-    const ok = confirm(`Remove "${job.title}" from your workspace?`);
-    if (!ok) return;
     onRemove(job.id);
   }
 

@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { analyzeSelectedJob, type AnalyzeSelectedJobInput, type ProviderConfigState } from "@/lib/ai";
-import { toUserFacingAnalysisError } from "@/lib/analysis-flow-messages";
 import {
+  classifyAnalysisFailure,
+  messageForAnalysisFailureCode,
+} from "@/lib/analysis-flow-messages";
+import {
+  estimateAnalysisPayloadChars,
+  estimateResumeTextLength,
   logAnalysisDiagnostic,
   logAnalysisError,
   safeErrorSnippet,
@@ -17,6 +22,10 @@ type AnalyzeSelectedJobRequestBody = {
   fitContext?: AnalyzeSelectedJobInput["fitContext"];
   optimizeContext?: AnalyzeSelectedJobInput["optimizeContext"];
   providerConfig?: ProviderConfigState;
+  resumeMeta?: {
+    id?: string | null;
+    name?: string | null;
+  };
 };
 
 function isResumeContext(
@@ -30,164 +39,202 @@ function isResumeContext(
   );
 }
 
+function buildRequestDiagnostics(input: {
+  jobId: string;
+  body: Partial<AnalyzeSelectedJobRequestBody>;
+  hasResume: boolean;
+  payloadCharsEstimate?: number;
+  geminiConfigured: boolean;
+  geminiApiStatus?: string;
+}): Record<string, unknown> {
+  const resumeContext = input.body.resumeContext;
+  const description = input.body.selectedJob?.description ?? "";
+
+  return {
+    selectedJobId: input.jobId || null,
+    activeResumeId: input.body.resumeMeta?.id ?? null,
+    activeResumeName: input.body.resumeMeta?.name ?? null,
+    resumeTextLength: resumeContext ? estimateResumeTextLength(resumeContext) : 0,
+    jobDescriptionLength: description.length,
+    payloadCharsEstimate: input.payloadCharsEstimate ?? null,
+    geminiConfigured: input.geminiConfigured,
+    geminiApiStatus: input.geminiApiStatus ?? null,
+  };
+}
+
+function analysisFailureResponse(
+  code: Parameters<typeof messageForAnalysisFailureCode>[0],
+  options?: { status?: number; diagnostics?: Record<string, unknown> },
+) {
+  const mapped = messageForAnalysisFailureCode(code);
+  if (options?.diagnostics) {
+    logAnalysisDiagnostic("analysis_failure_response", {
+      code,
+      retryable: mapped.retryable,
+      ...options.diagnostics,
+    });
+  }
+  return NextResponse.json(
+    {
+      error: mapped.message,
+      code,
+      retryable: mapped.retryable,
+    },
+    { status: options?.status ?? (mapped.retryable ? 503 : 400) },
+  );
+}
+
 export async function POST(request: Request) {
   const geminiApiKey = process.env.GEMINI_API_KEY;
   const hasGeminiKey = Boolean(geminiApiKey && geminiApiKey.trim().length > 0);
+  let parsedBody: Partial<AnalyzeSelectedJobRequestBody> = {};
 
   try {
     logAnalysisDiagnostic("request_received", {
       runtime: "nodejs",
-      hasGeminiKey,
+      geminiConfigured: hasGeminiKey,
     });
 
-    const body = (await request.json()) as Partial<AnalyzeSelectedJobRequestBody>;
-    const jobId = body.selectedJob?.jobId ?? "";
-    const hasResume = isResumeContext(body.resumeContext);
+    parsedBody = (await request.json()) as Partial<AnalyzeSelectedJobRequestBody>;
+    const jobId = parsedBody.selectedJob?.jobId ?? "";
+    const hasResume = isResumeContext(parsedBody.resumeContext);
+    const jobDescriptionLength = parsedBody.selectedJob?.description?.length ?? 0;
+    const resumeTextLength = parsedBody.resumeContext
+      ? estimateResumeTextLength(parsedBody.resumeContext)
+      : 0;
+    const payloadCharsEstimate =
+      parsedBody.selectedJob?.description && parsedBody.resumeContext
+        ? estimateAnalysisPayloadChars({
+            jobDescription: parsedBody.selectedJob.description,
+            resumeContext: parsedBody.resumeContext,
+            jobTitle: parsedBody.selectedJob.title,
+            jobCompany: parsedBody.selectedJob.company,
+          })
+        : undefined;
+
+    const requestDiagnostics = buildRequestDiagnostics({
+      jobId,
+      body: parsedBody,
+      hasResume,
+      payloadCharsEstimate,
+      geminiConfigured: hasGeminiKey,
+    });
 
     logAnalysisDiagnostic("request_parsed", {
-      jobId,
+      ...requestDiagnostics,
       hasResume,
-      hasJobTitle: Boolean(body.selectedJob?.title?.trim()),
-      hasJobCompany: Boolean(body.selectedJob?.company?.trim()),
-      jobDescriptionChars: body.selectedJob?.description?.length ?? 0,
-      resumeSummaryChars: body.resumeContext?.summary?.length ?? 0,
-      resumeSkillsCount: body.resumeContext?.skills?.length ?? 0,
-      resumeHighlightsCount: body.resumeContext?.experienceHighlights?.length ?? 0,
+      hasJobTitle: Boolean(parsedBody.selectedJob?.title?.trim()),
+      hasJobCompany: Boolean(parsedBody.selectedJob?.company?.trim()),
+      resumeSummaryChars: parsedBody.resumeContext?.summary?.length ?? 0,
+      resumeSkillsCount: parsedBody.resumeContext?.skills?.length ?? 0,
+      resumeHighlightsCount: parsedBody.resumeContext?.experienceHighlights?.length ?? 0,
     });
 
-    if (!body.selectedJob?.jobId || !body.selectedJob?.title || !body.selectedJob?.company) {
-      return NextResponse.json(
-        {
-          error: "Selected job context is required.",
-          code: "missing_inputs",
-          retryable: false,
-        },
-        { status: 400 },
-      );
+    if (!parsedBody.selectedJob?.jobId || !parsedBody.selectedJob?.title || !parsedBody.selectedJob?.company) {
+      return analysisFailureResponse("missing_job", {
+        status: 400,
+        diagnostics: requestDiagnostics,
+      });
     }
 
-    if (!body.selectedJob.description?.trim()) {
-      return NextResponse.json(
-        {
-          error: "Add a resume and job description before running analysis.",
-          code: "missing_inputs",
-          retryable: false,
-        },
-        { status: 400 },
-      );
+    if (!parsedBody.selectedJob.description?.trim()) {
+      return analysisFailureResponse("missing_job", {
+        status: 400,
+        diagnostics: { ...requestDiagnostics, jobDescriptionLength },
+      });
     }
 
-    const resumeContext = body.resumeContext;
+    const resumeContext = parsedBody.resumeContext;
     if (!isResumeContext(resumeContext)) {
-      return NextResponse.json(
-        {
-          error: "Add a resume and job description before running analysis.",
-          code: "missing_inputs",
-          retryable: false,
-        },
-        { status: 400 },
-      );
+      return analysisFailureResponse("missing_resume", {
+        status: 400,
+        diagnostics: { ...requestDiagnostics, resumeTextLength },
+      });
     }
 
     const payloadCheck = validateAnalysisRequest({
-      jobDescription: body.selectedJob.description,
+      jobDescription: parsedBody.selectedJob.description,
       resumeContext,
-      jobTitle: body.selectedJob.title,
-      jobCompany: body.selectedJob.company,
+      jobTitle: parsedBody.selectedJob.title,
+      jobCompany: parsedBody.selectedJob.company,
     });
 
     if (!payloadCheck.ok) {
       logAnalysisDiagnostic("validation_failed", {
-        jobId,
+        ...requestDiagnostics,
         code: payloadCheck.code,
-        payloadChars: payloadCheck.code === "payload_too_large" ? "over_limit" : undefined,
+        payloadCharsEstimate: payloadCheck.code === "prompt_too_large" ? "over_limit" : payloadCharsEstimate,
       });
-      return NextResponse.json(
-        {
-          error: payloadCheck.message,
-          code: payloadCheck.code,
-          retryable: false,
-        },
-        { status: payloadCheck.code === "payload_too_large" ? 413 : 400 },
-      );
+      return analysisFailureResponse(payloadCheck.code, {
+        status: payloadCheck.code === "prompt_too_large" ? 413 : 400,
+        diagnostics: requestDiagnostics,
+      });
     }
 
     if (!hasGeminiKey || geminiApiKey === "your_real_key_here") {
-      logAnalysisDiagnostic("configuration_missing", { jobId });
-      return NextResponse.json(
-        {
-          error:
-            "Live analysis is unavailable because Gemini is not configured on the server. Add a valid GEMINI_API_KEY and try again.",
-          code: "configuration",
-          retryable: false,
-        },
-        { status: 503 },
-      );
+      logAnalysisDiagnostic("configuration_missing", requestDiagnostics);
+      return analysisFailureResponse("api_key_missing", {
+        status: 503,
+        diagnostics: requestDiagnostics,
+      });
     }
 
     logAnalysisDiagnostic("analysis_started", {
-      jobId,
+      ...requestDiagnostics,
       payloadChars: payloadCheck.payloadChars,
-      hasFitContext: Boolean(body.fitContext),
-      hasOptimizeContext: Boolean(body.optimizeContext),
+      hasFitContext: Boolean(parsedBody.fitContext),
+      hasOptimizeContext: Boolean(parsedBody.optimizeContext),
     });
 
     const response = await analyzeSelectedJob(
       {
-        selectedJob: body.selectedJob,
+        selectedJob: parsedBody.selectedJob,
         resumeContext,
-        fitContext: body.fitContext,
-        optimizeContext: body.optimizeContext,
+        fitContext: parsedBody.fitContext,
+        optimizeContext: parsedBody.optimizeContext,
       },
       {
-        providerConfig: body.providerConfig,
+        providerConfig: parsedBody.providerConfig,
       },
     );
 
     logAnalysisDiagnostic("analysis_success", {
-      jobId,
+      ...requestDiagnostics,
       provider: response.provider,
       fitScore: response.fitScore,
+      geminiApiStatus: "ok",
     });
 
     return NextResponse.json(response);
   } catch (error) {
     const snippet = safeErrorSnippet(error);
-    const normalized = snippet.toLowerCase();
-    const retryable =
-      normalized.includes("429") ||
-      normalized.includes("503") ||
-      normalized.includes("502") ||
-      normalized.includes("500") ||
-      normalized.includes("overloaded") ||
-      normalized.includes("timeout") ||
-      normalized.includes("timed out") ||
-      normalized.includes("resource exhausted") ||
-      normalized.includes("fetch failed") ||
-      normalized.includes("network") ||
-      normalized.includes("invalid json");
+    const classified = classifyAnalysisFailure(error);
+    const mapped = messageForAnalysisFailureCode(classified.code);
 
-    const code = normalized.includes("invalid json")
-      ? "invalid_response"
-      : retryable
-        ? "provider_error"
-        : "generic";
-
-    logAnalysisError("analysis_failed", error, {
-      hasGeminiKey,
-      code,
-      retryable,
-      snippet,
+    const jobId = parsedBody.selectedJob?.jobId ?? "";
+    const diagnostics = buildRequestDiagnostics({
+      jobId,
+      body: parsedBody,
+      hasResume: isResumeContext(parsedBody.resumeContext),
+      geminiConfigured: hasGeminiKey,
+      geminiApiStatus: snippet,
     });
 
-    const { message, retryable: mappedRetryable } = toUserFacingAnalysisError(error);
+    logAnalysisError("analysis_failed", error, {
+      ...diagnostics,
+      code: classified.code,
+      retryable: mapped.retryable,
+      snippet,
+      responseParseFailure: classified.code === "response_parse_error",
+    });
+
     return NextResponse.json(
       {
-        error: message,
-        code,
-        retryable: retryable || mappedRetryable,
+        error: mapped.message,
+        code: classified.code,
+        retryable: mapped.retryable,
       },
-      { status: retryable ? 503 : 500 },
+      { status: mapped.retryable ? 503 : 500 },
     );
   }
 }

@@ -1,3 +1,5 @@
+import type { AnalysisFailureCode } from "@/lib/analysis-flow-messages";
+import { messageForAnalysisFailureCode } from "@/lib/analysis-flow-messages";
 import type { AnalysisResumeContext } from "@/lib/analysis-resume-context";
 import { hasAnalysisResumeContext } from "@/lib/analysis-resume-context";
 
@@ -6,7 +8,16 @@ export const MAX_ANALYSIS_PAYLOAD_CHARS = 120_000;
 
 export type AnalysisRequestValidation =
   | { ok: true; payloadChars: number }
-  | { ok: false; code: "missing_inputs" | "payload_too_large"; message: string };
+  | { ok: false; code: AnalysisFailureCode; message: string };
+
+export function estimateResumeTextLength(resumeContext: AnalysisResumeContext): number {
+  return (
+    resumeContext.summary.length +
+    resumeContext.skills.join("").length +
+    resumeContext.experienceHighlights.join("").length +
+    resumeContext.educationEntries.join("").length
+  );
+}
 
 export function estimateAnalysisPayloadChars(input: {
   jobDescription: string;
@@ -18,9 +29,7 @@ export function estimateAnalysisPayloadChars(input: {
     (input.jobTitle?.length ?? 0) +
     (input.jobCompany?.length ?? 0) +
     input.jobDescription.length +
-    input.resumeContext.summary.length +
-    input.resumeContext.skills.join("").length +
-    input.resumeContext.experienceHighlights.join("").length
+    estimateResumeTextLength(input.resumeContext)
   );
 }
 
@@ -33,22 +42,25 @@ export function validateAnalysisRequest(input: {
   const hasJobDescription = input.jobDescription.trim().length > 0;
   const hasResume = hasAnalysisResumeContext(input.resumeContext);
 
-  if (!hasJobDescription || !hasResume) {
-    return {
-      ok: false,
-      code: "missing_inputs",
-      message: "Add a resume and job description before running analysis.",
-    };
+  if (!hasJobDescription && !hasResume) {
+    const mapped = messageForAnalysisFailureCode("invalid_payload");
+    return { ok: false, code: "invalid_payload", message: mapped.message };
+  }
+
+  if (!hasJobDescription) {
+    const mapped = messageForAnalysisFailureCode("missing_job");
+    return { ok: false, code: "missing_job", message: mapped.message };
+  }
+
+  if (!hasResume) {
+    const mapped = messageForAnalysisFailureCode("missing_resume");
+    return { ok: false, code: "missing_resume", message: mapped.message };
   }
 
   const payloadChars = estimateAnalysisPayloadChars(input);
   if (payloadChars > MAX_ANALYSIS_PAYLOAD_CHARS) {
-    return {
-      ok: false,
-      code: "payload_too_large",
-      message:
-        "This job post or resume is too long to analyze cleanly. Try shortening the job description.",
-    };
+    const mapped = messageForAnalysisFailureCode("prompt_too_large");
+    return { ok: false, code: "prompt_too_large", message: mapped.message };
   }
 
   return { ok: true, payloadChars };
@@ -60,6 +72,18 @@ export function logAnalysisDiagnostic(
 ): void {
   if (process.env.NODE_ENV === "production") return;
   console.info(`[single-job-analysis] ${event}`, details);
+}
+
+export function logAnalysisRetryDiagnostic(details: {
+  phase: string;
+  pendingJobId: string | null;
+  pendingResumeId: string | null;
+  retryJobId?: string | null;
+  retryResumeId?: string | null;
+  failureCode?: string | null;
+  failureMessage?: string | null;
+}): void {
+  logAnalysisDiagnostic("retry_context", details);
 }
 
 export function logAnalysisError(

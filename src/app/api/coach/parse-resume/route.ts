@@ -157,6 +157,9 @@ export async function POST(request: Request) {
       highlights: result.fields.highlights,
       education: result.fields.education,
       rawText: result.fields.rawText,
+      candidateName: result.fields.candidateName,
+      contactLine: result.fields.contactLine,
+      extraSections: result.fields.extraSections ?? [],
       warning: result.warning,
       code: "success",
     });

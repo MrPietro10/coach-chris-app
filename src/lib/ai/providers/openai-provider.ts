@@ -9,6 +9,8 @@ import type {
   GenerateCoachReplyOutput,
   GenerateInterviewQuestionInput,
   GenerateInterviewQuestionOutput,
+  GenerateTailoredResumeDraftInput,
+  GenerateTailoredResumeDraftOutput,
   OptimizeResumeInput,
   OptimizeResumeOutput,
 } from "@/lib/ai/types";
@@ -23,6 +25,13 @@ export class OpenAIProvider implements AIProvider {
   }
 
   async optimizeResume(input: OptimizeResumeInput): Promise<OptimizeResumeOutput> {
+    void input;
+    throw new ProviderNotImplementedError(this.id);
+  }
+
+  async generateTailoredResumeDraft(
+    input: GenerateTailoredResumeDraftInput,
+  ): Promise<GenerateTailoredResumeDraftOutput> {
     void input;
     throw new ProviderNotImplementedError(this.id);
   }

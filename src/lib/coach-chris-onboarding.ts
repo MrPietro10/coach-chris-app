@@ -25,3 +25,9 @@ export const ONBOARDING_STEPS = [
       "See how your resume matches the job, what is missing, and how to strengthen your application strategy.",
   },
 ] as const;
+
+export const ONBOARDING_STEP_ROUTES = {
+  1: "/resume",
+  2: "/analyze",
+  3: "/results",
+} as const;

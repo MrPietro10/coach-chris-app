@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useIsClient } from "@/hooks/use-is-client";
 import { clearPersistedAlphaCode } from "@/lib/alpha-code-store";
+import { runAlphaStorageMigration } from "@/lib/alpha-storage-hygiene";
 import {
   getActiveAlphaStorageNamespace,
   setActiveAlphaStorageNamespace,
@@ -65,6 +66,7 @@ export function AlphaAccessGate({
       }
 
       setActiveAlphaStorageNamespace(enteredCode);
+      runAlphaStorageMigration();
       setAlphaUnlocked(true);
       router.push("/resume");
     } catch {

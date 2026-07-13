@@ -8,6 +8,9 @@ export type ResumeWorkspaceSnapshot = {
   parsedAt: string | null;
   activeResumeId?: string | null;
   activeResumeName?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  sourceFileName?: string | null;
 };
 
 export type ResumeWorkspaceHints = {

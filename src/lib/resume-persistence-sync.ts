@@ -1,3 +1,4 @@
+import { hasPendingParseDraft } from "@/lib/pending-parse-draft";
 import {
   getResumePersistenceState,
   getResumeWorkspaceSnapshot,
@@ -16,6 +17,7 @@ export function buildResumeWorkspaceSnapshotFromInput(
 }
 
 export function deriveResumeFlowStatus(draft?: StoredResumeInput): ResumeParseFlowStatus {
+  if (hasPendingParseDraft()) return "parse_success";
   const snapshot = buildResumeWorkspaceSnapshotFromInput(draft ?? getStoredResumeInput());
   const hints = getResumeWorkspaceHints(snapshot);
   if (hints.isSavedForAnalysis && !hints.hasUnsavedEdits) return "resume_ready";

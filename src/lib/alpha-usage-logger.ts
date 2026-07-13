@@ -1,4 +1,5 @@
-import { readAlphaScopedStorageItem, writeAlphaScopedStorageItem } from "@/lib/alpha-scoped-storage";
+import { readAlphaScopedStorageItem } from "@/lib/alpha-scoped-storage";
+import { writeScopedJson } from "@/lib/alpha-scoped-json-write";
 import {
   ADMIN_ALPHA_STORAGE_NAMESPACE,
   getActiveAlphaStorageNamespace,
@@ -64,10 +65,15 @@ export function logEvent(eventName: string, metadata: Record<string, unknown> = 
   const activeNamespace = getActiveAlphaStorageNamespace();
   if (!activeNamespace) return;
 
-  const user =
-    window.localStorage.getItem(ADMIN_ACCESS_STORAGE_KEY) === "1"
-      ? ADMIN_ALPHA_STORAGE_NAMESPACE
-      : activeNamespace;
+  const adminFlag = window.localStorage.getItem(ADMIN_ACCESS_STORAGE_KEY) === "1";
+  if (adminFlag && activeNamespace !== ADMIN_ALPHA_STORAGE_NAMESPACE) {
+    console.warn(
+      "[coachChris:storage] Skipping usage log write: admin session flag is set outside the admin namespace.",
+    );
+    return;
+  }
+
+  const user = adminFlag ? ADMIN_ALPHA_STORAGE_NAMESPACE : activeNamespace;
   const safeMetadata = sanitizeMetadata(metadata);
   const entry: AlphaLogEntry = {
     user,
@@ -77,7 +83,7 @@ export function logEvent(eventName: string, metadata: Record<string, unknown> = 
   };
 
   const nextLogs = [...getStoredLogs(), entry];
-  writeAlphaScopedStorageItem("usage-logs", JSON.stringify(nextLogs));
+  writeScopedJson("usage-logs", nextLogs);
   void fetch("/api/log", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

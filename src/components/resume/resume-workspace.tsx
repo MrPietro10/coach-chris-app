@@ -11,10 +11,29 @@ import {
 } from "@/components/resume/resume-parse-review-modal";
 import { ResumeParseStatus } from "@/components/resume/resume-parse-status";
 import { ALPHA_SESSION_CHANGED_EVENT } from "@/lib/alpha-session-store";
+import { logEvent } from "@/lib/alpha-usage-logger";
 import {
+  buildResumeExportNotice,
+  buildResumeExportContactFromProfile,
+  buildResumeExportContentFromRecord,
+  downloadResumeExport,
+} from "@/lib/resume-export";
+import {
+  clearPendingParseDraft,
+  getPendingParseDraft,
+  PENDING_PARSE_DRAFT_MESSAGE,
+  pendingParseDraftToInput,
+  savePendingParseDraft,
+  type PendingParseDraft,
+} from "@/lib/pending-parse-draft";
+import {
+  clearLegacyResumeStorage,
   clearStoredResume,
+  clearStoredResumeUploadState,
+  confirmUploadedResumeVersion,
   createResume,
   getActiveResumeId,
+  getActiveResumeRecord,
   getAllResumeRecords,
   getResumeWorkspaceSnapshot,
   getStoredResumeUploadState,
@@ -27,6 +46,7 @@ import {
   type StoredResumeUploadState,
 } from "@/lib/resume-store";
 import { recordResumeParseFeedback } from "@/lib/resume-parse-feedback";
+import { getStoredProfile } from "@/lib/job-session-store";
 import { readResumeUiSyncState } from "@/lib/resume-persistence-sync";
 import type { ResumeParseErrorCode } from "@/lib/resume-parse-messages";
 import {
@@ -117,18 +137,75 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
   const [pendingParsedAt, setPendingParsedAt] = useState<string | null>(null);
   const [saveSuccessVisible, setSaveSuccessVisible] = useState(false);
   const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  function applyPendingParseDraftToState(draft: PendingParseDraft): void {
+    setPendingParseFields(pendingParseDraftToInput(draft));
+    setPendingParsedAt(draft.parsedAt);
+    setLastParsedFileType(draft.fileType);
+    setUploadedFile({
+      fileName: draft.sourceFileName,
+      uploadedAt: draft.uploadedAt ?? draft.parsedAt,
+      fileType: draft.fileType ?? "pdf",
+    });
+    setFlowStatus("parse_success");
+    setStatusDetail({
+      title: null,
+      message: PENDING_PARSE_DRAFT_MESSAGE,
+      hint: null,
+    });
+  }
+
+  function restorePendingParseDraftFromStorage(): boolean {
+    const draft = getPendingParseDraft();
+    if (!draft) return false;
+    applyPendingParseDraftToState(draft);
+    return true;
+  }
+
+  function persistPendingParseDraft(
+    fields: StoredResumeInput,
+    options: {
+      sourceFileName: string;
+      parsedAt: string;
+      fileType?: "pdf" | "docx";
+      uploadedAt?: string;
+    },
+  ): void {
+    savePendingParseDraft({
+      sourceFileName: options.sourceFileName,
+      parsedAt: options.parsedAt,
+      summary: fields.summary,
+      skills: fields.skills,
+      highlights: fields.highlights,
+      education: fields.education,
+      rawText: fields.rawText,
+      candidateName: fields.candidateName,
+      contactLine: fields.contactLine,
+      extraSections: fields.extraSections,
+      fileType: options.fileType,
+      uploadedAt: options.uploadedAt,
+    });
+  }
 
   function syncFromStorage(): void {
     const next = readResumeUiSyncState();
     setResumeFields(next.fields);
     setUploadedFile(next.upload);
+    if (getPendingParseDraft()) {
+      restorePendingParseDraftFromStorage();
+      return;
+    }
     setFlowStatus(next.flowStatus);
     if (next.parsedFileType) {
       setLastParsedFileType(next.parsedFileType);
     } else {
       setLastParsedFileType(undefined);
     }
+    setPendingParseFields(null);
+    setPendingParsedAt(null);
+    setParseReviewOpen(false);
   }
 
   useEffect(() => {
@@ -136,6 +213,7 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
       createResume("Primary resume");
     }
     syncFromStorage();
+    restorePendingParseDraftFromStorage();
 
     const handleExternalSync = () => {
       syncFromStorage();
@@ -218,7 +296,38 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
 
   function finishParseReview(confirmed: StoredResumeInput, mode: ResumeParseConfirmMode): void {
     recordParseFeedback(mode);
-    saveResumeForAnalysis(confirmed);
+    const normalized = {
+      summary: confirmed.summary.trim(),
+      skills: confirmed.skills.trim(),
+      highlights: confirmed.highlights.trim(),
+      education: confirmed.education.trim(),
+      rawText: confirmed.rawText?.trim() ?? "",
+      candidateName: confirmed.candidateName?.trim() ?? "",
+      contactLine: confirmed.contactLine?.trim() ?? "",
+      extraSections: confirmed.extraSections ?? [],
+    };
+    const uploadSnapshot = getStoredResumeUploadState();
+    const savedRecord = confirmUploadedResumeVersion(normalized, {
+      setActive: true,
+      sourceFileName: uploadSnapshot?.fileName ?? uploadedFile?.fileName,
+      uploadedAt: uploadSnapshot?.uploadedAt ?? uploadedFile?.uploadedAt,
+      parsedAt: pendingParsedAt ?? undefined,
+      fileType: lastParsedFileType ?? uploadedFile?.fileType,
+    });
+    if (!savedRecord) {
+      setNotice("Could not save your uploaded resume as a new version.");
+      return;
+    }
+    clearPendingParseDraft();
+    setResumeFields(normalized);
+    setFlowStatus("resume_ready");
+    setStatusDetail({
+      title: null,
+      message: RESUME_READY_MESSAGE,
+      hint: null,
+    });
+    setSaveSuccessVisible(true);
+    setNotice(`Saved "${savedRecord.name}" as a new resume version and set it active.`);
     setPendingParseFields(null);
     setPendingParsedAt(null);
     setParseReviewOpen(false);
@@ -229,12 +338,15 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
   }
 
   function removeResumeCompletely(): void {
+    clearPendingParseDraft();
+    clearLegacyResumeStorage();
     const activeId = getActiveResumeId();
     const records = getAllResumeRecords();
     if (activeId && records.length > 1) {
       removeResume(activeId);
     } else if (activeId) {
       clearStoredResume();
+      clearStoredResumeUploadState();
     }
     syncFromStorage();
     const next = readResumeUiSyncState();
@@ -248,6 +360,30 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
     setFlowStatus(next.flowStatus);
     clearStatusDetail();
     setNotice(records.length > 1 ? "Resume version removed." : "Resume cleared.");
+  }
+
+  async function downloadActiveResume(): Promise<void> {
+    const activeRecord = getActiveResumeRecord();
+    if (!activeRecord) {
+      setNotice("Add and save a resume before downloading.");
+      return;
+    }
+
+    setIsExporting(true);
+    try {
+      const profile = getStoredProfile();
+      const content = buildResumeExportContentFromRecord(activeRecord, profile.fullName, {
+        contact: buildResumeExportContactFromProfile(profile),
+        mergeWithSource: Boolean(activeRecord.tailoredForJobId),
+      });
+      setNotice(buildResumeExportNotice(content.versionName, content));
+      await downloadResumeExport(content);
+      logEvent("download_resume", { format: "docx", resumeId: activeRecord.id });
+    } catch {
+      setNotice("Could not export resume as DOCX. Please try again.");
+    } finally {
+      setIsExporting(false);
+    }
   }
 
   async function handleSelectedFile(file: File): Promise<void> {
@@ -306,6 +442,10 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
         skills?: string;
         highlights?: string;
         education?: string;
+        rawText?: string;
+        candidateName?: string;
+        contactLine?: string;
+        extraSections?: Array<{ heading?: string; content?: string }>;
       } = {};
 
       try {
@@ -333,6 +473,19 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
         skills: payload.skills?.trim() ?? "",
         highlights: payload.highlights?.trim() ?? "",
         education: payload.education?.trim() ?? "",
+        rawText: payload.rawText?.trim() ?? "",
+        candidateName: payload.candidateName?.trim() ?? "",
+        contactLine: payload.contactLine?.trim() ?? "",
+        extraSections: Array.isArray(payload.extraSections)
+          ? payload.extraSections
+              .map((section) => {
+                const heading = typeof section.heading === "string" ? section.heading.trim() : "";
+                const content = typeof section.content === "string" ? section.content.trim() : "";
+                if (!heading || !content) return null;
+                return { heading, content };
+              })
+              .filter((section): section is { heading: string; content: string } => section !== null)
+          : [],
       };
 
       if (!hasResumeFieldContent(parsedFields)) {
@@ -355,6 +508,13 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
       setLastParsedFileType(parsedFileType);
       setUploadedFile(getStoredResumeUploadState());
       const parsedAtStamp = new Date().toISOString();
+      const uploadSnapshot = getStoredResumeUploadState();
+      persistPendingParseDraft(parsedFields, {
+        sourceFileName: uploadSnapshot?.fileName ?? file.name,
+        parsedAt: parsedAtStamp,
+        fileType: parsedFileType,
+        uploadedAt: uploadSnapshot?.uploadedAt ?? uploadState.uploadedAt,
+      });
       setPendingParsedAt(parsedAtStamp);
       setPendingParseFields(parsedFields);
       setParseReviewOpen(true);
@@ -381,20 +541,28 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
 
   return (
     <section className="rounded-xl border border-zinc-200/80 bg-white p-5">
-      <h2 className="text-sm font-medium text-zinc-900">Your resume</h2>
-      <p className="mt-1 text-xs text-zinc-500">
+      <h2 className="text-sm font-semibold text-zinc-900">Your resume</h2>
+      <p className="mt-0.5 text-xs text-zinc-500">
         Upload a {PARSEABLE_RESUME_LABEL} or paste below. Maintain multiple versions and choose which is active for analysis.
       </p>
 
-      <ResumeVersionBar onSwitch={syncFromStorage} />
+      <ResumeVersionBar
+        onSwitch={syncFromStorage}
+        onRename={(name) => setNotice(`Renamed to "${name}".`)}
+        onRemoveTailored={(name) => setNotice(`Removed tailored resume "${name}".`)}
+      />
 
       {saveSuccessVisible && hints.isSavedForAnalysis && !hints.hasUnsavedEdits ? (
-        <p className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-900">
+        <p className="mt-3 rounded-lg border border-emerald-200/80 bg-emerald-50/60 px-3 py-2 text-xs text-emerald-900">
           {RESUME_READY_MESSAGE}
         </p>
       ) : null}
 
-      <ActiveResumeCallout snapshot={snapshot} inAnalysisContext={hints.isSavedForAnalysis} />
+      <ActiveResumeCallout
+        snapshot={snapshot}
+        inAnalysisContext={hints.isSavedForAnalysis}
+        variant="compact"
+      />
 
       <ResumeParseStatus
         status={displayStatus}
@@ -403,6 +571,19 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
         message={statusDetail.message}
         hint={statusDetail.hint}
       />
+
+      {pendingParseFields && !parseReviewOpen ? (
+        <div className="mt-3 rounded-lg border border-sky-200/80 bg-sky-50/60 px-3 py-2.5">
+          <p className="text-xs text-sky-950">{PENDING_PARSE_DRAFT_MESSAGE}</p>
+          <button
+            type="button"
+            onClick={() => setParseReviewOpen(true)}
+            className="mt-2 rounded-lg border border-sky-300 bg-white px-3 py-1.5 text-xs font-medium text-sky-900 transition-colors hover:bg-sky-50"
+          >
+            Review draft
+          </button>
+        </div>
+      ) : null}
 
       {hints.hasUnsavedEdits && displayStatus !== "uploading" && displayStatus !== "parsing" ? (
         <p className="mt-3 text-xs text-amber-800">
@@ -443,7 +624,7 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
           isDragActive ? "border-zinc-900 bg-zinc-50" : "border-zinc-300 hover:bg-zinc-50/60"
         } ${isBusy ? "pointer-events-none opacity-60" : ""}`}
       >
-        <p className="text-sm text-zinc-700">
+        <p className="text-xs text-zinc-600">
           {isBusy ? (displayStatus === "uploading" ? "Uploading…" : "Parsing…") : "Drop PDF or DOCX here"}
         </p>
         {!isBusy ? (
@@ -453,7 +634,7 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
               event.stopPropagation();
               fileInputRef.current?.click();
             }}
-            className="mt-3 rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-800 shadow-sm transition-colors hover:border-zinc-400 hover:bg-zinc-50"
+            className="mt-3 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-medium text-zinc-800 transition-colors hover:border-zinc-400 hover:bg-zinc-50"
           >
             Choose a file
           </button>
@@ -492,7 +673,7 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
 
       <div className="mt-5 space-y-4">
         <div>
-          <label htmlFor="resume-summary" className="block text-sm font-medium text-zinc-900">
+          <label htmlFor="resume-summary" className="block text-xs font-medium text-zinc-700">
             Summary
           </label>
           <textarea
@@ -504,7 +685,7 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
           />
         </div>
         <div>
-          <label htmlFor="resume-skills" className="block text-sm font-medium text-zinc-900">
+          <label htmlFor="resume-skills" className="block text-xs font-medium text-zinc-700">
             Skills
           </label>
           <input
@@ -517,7 +698,7 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
           />
         </div>
         <div>
-          <label htmlFor="resume-highlights" className="block text-sm font-medium text-zinc-900">
+          <label htmlFor="resume-highlights" className="block text-xs font-medium text-zinc-700">
             Experience
           </label>
           <textarea
@@ -529,7 +710,7 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
           />
         </div>
         <div>
-          <label htmlFor="resume-education" className="block text-sm font-medium text-zinc-900">
+          <label htmlFor="resume-education" className="block text-xs font-medium text-zinc-700">
             Education
           </label>
           <textarea
@@ -553,6 +734,14 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
             Remove resume
           </button>
         ) : null}
+        <button
+          type="button"
+          disabled={isExporting || isBusy || !hints.isSavedForAnalysis}
+          onClick={() => void downloadActiveResume()}
+          className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {isExporting ? "Preparing download…" : "Download DOCX"}
+        </button>
         <button
           type="button"
           disabled={isSaving || isBusy || !hasResumeFieldContent(resumeFields)}
@@ -579,10 +768,21 @@ export function ResumeWorkspace({ onNotice }: ResumeWorkspaceProps) {
         onEditStarted={() => recordParseFeedback("corrected")}
         onDismiss={() => {
           setParseReviewOpen(false);
-          setPendingParseFields(null);
-          setPendingParsedAt(null);
-          setFlowStatus("idle");
-          clearStatusDetail();
+          if (pendingParseFields && pendingParsedAt) {
+            const uploadSnapshot = getStoredResumeUploadState();
+            persistPendingParseDraft(pendingParseFields, {
+              sourceFileName: uploadSnapshot?.fileName ?? uploadedFile?.fileName ?? "Uploaded resume",
+              parsedAt: pendingParsedAt,
+              fileType: lastParsedFileType ?? uploadedFile?.fileType,
+              uploadedAt: uploadSnapshot?.uploadedAt ?? uploadedFile?.uploadedAt,
+            });
+            setFlowStatus("parse_success");
+            setStatusDetail({
+              title: null,
+              message: PENDING_PARSE_DRAFT_MESSAGE,
+              hint: null,
+            });
+          }
           setNotice(null);
         }}
       />

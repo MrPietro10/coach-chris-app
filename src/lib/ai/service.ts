@@ -4,6 +4,7 @@ import {
   buildInterviewBehaviorContext,
   buildJobFitBehaviorContext,
   buildResumeOptimizationBehaviorContext,
+  buildTailoredResumeDraftBehaviorContext,
 } from "@/lib/ai/chris-behavior-policy";
 import type {
   AnalyzeJobFitInput,
@@ -14,6 +15,8 @@ import type {
   GenerateCoachReplyOutput,
   GenerateInterviewQuestionInput,
   GenerateInterviewQuestionOutput,
+  GenerateTailoredResumeDraftInput,
+  GenerateTailoredResumeDraftOutput,
   OptimizeResumeInput,
   OptimizeResumeOutput,
   ProviderConfigState,
@@ -42,6 +45,18 @@ export async function optimizeResume(
   return provider.optimizeResume({
     ...input,
     behaviorContext: input.behaviorContext ?? buildResumeOptimizationBehaviorContext(input),
+  });
+}
+
+export async function generateTailoredResumeDraft(
+  input: GenerateTailoredResumeDraftInput,
+  options?: ServiceRoutingOptions,
+): Promise<GenerateTailoredResumeDraftOutput> {
+  const provider = getRoutedProvider(options?.providerConfig);
+  return provider.generateTailoredResumeDraft({
+    ...input,
+    behaviorContext:
+      input.behaviorContext ?? buildTailoredResumeDraftBehaviorContext(input),
   });
 }
 

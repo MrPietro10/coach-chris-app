@@ -1,22 +1,27 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { AnalysisResumeSelector } from "@/components/analyze/analysis-resume-selector";
 import {
   ImportedJobReviewModal,
   type ImportedJobDraft,
 } from "@/components/analyze/imported-job-review-modal";
-import { JobUrlImport } from "@/components/analyze/job-url-import";
+import { JobUrlImport, type JobUrlImportPartialFields } from "@/components/analyze/job-url-import";
 import { CoachChrisIntro } from "@/components/onboarding/coach-chris-intro";
 import { PageHeader } from "@/components/ui/page-header";
-import { parseSuggestedJobTitle } from "@/lib/job-import-cleanup";
-import { setActiveJob } from "@/lib/active-job";
-import { buildSessionJobId, saveUserJob } from "@/lib/job-session-store";
+import { isResumeRecordReadyForAnalysis } from "@/lib/analysis-resume-selection";
 import { logEvent } from "@/lib/alpha-usage-logger";
+import { setActiveJob } from "@/lib/active-job";
+import { parseSuggestedJobTitle } from "@/lib/job-import-cleanup";
+import { buildSessionJobId, saveUserJob } from "@/lib/job-session-store";
+import { getActiveResumeId, getResumeRecord, RESUME_STORAGE_CHANGED_EVENT } from "@/lib/resume-store";
 
 export default function AnalyzePage() {
   const router = useRouter();
   const manualSectionRef = useRef<HTMLElement | null>(null);
+  const descriptionTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const prevActiveResumeIdRef = useRef<string | null>(getActiveResumeId());
   const [message, setMessage] = useState<string | null>(null);
   const [descriptionInput, setDescriptionInput] = useState("");
   const [titleInput, setTitleInput] = useState("");
@@ -27,6 +32,24 @@ export default function AnalyzePage() {
   const [importReviewOpen, setImportReviewOpen] = useState(false);
   const [pendingImport, setPendingImport] = useState<ImportedJobDraft | null>(null);
   const [sourceUrl, setSourceUrl] = useState<string | undefined>(undefined);
+  const [selectedResumeId, setSelectedResumeId] = useState<string | null>(() => getActiveResumeId());
+
+  useEffect(() => {
+    function syncSelectedResumeWithActive(): void {
+      const nextActiveId = getActiveResumeId();
+      if (nextActiveId && nextActiveId !== prevActiveResumeIdRef.current) {
+        setSelectedResumeId(nextActiveId);
+        prevActiveResumeIdRef.current = nextActiveId;
+      }
+    }
+
+    window.addEventListener(RESUME_STORAGE_CHANGED_EVENT, syncSelectedResumeWithActive);
+    window.addEventListener("focus", syncSelectedResumeWithActive);
+    return () => {
+      window.removeEventListener(RESUME_STORAGE_CHANGED_EVENT, syncSelectedResumeWithActive);
+      window.removeEventListener("focus", syncSelectedResumeWithActive);
+    };
+  }, []);
 
   function applyImportedJob(draft: ImportedJobDraft): void {
     setTitleInput(draft.title);
@@ -39,6 +62,23 @@ export default function AnalyzePage() {
     setImportReviewOpen(false);
     setPendingImport(null);
     manualSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function handlePasteManuallyFromImport(fields: JobUrlImportPartialFields): void {
+    const parsed = fields.suggestedTitle ? parseSuggestedJobTitle(fields.suggestedTitle) : null;
+
+    if (!titleInput.trim()) {
+      setTitleInput(parsed?.title || fields.suggestedTitle?.trim() || "");
+    }
+    if (!companyInput.trim()) {
+      setCompanyInput(fields.company?.trim() || parsed?.company || "");
+    }
+    if (!locationInput.trim() && fields.location?.trim()) {
+      setLocationInput(fields.location.trim());
+    }
+
+    manualSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    window.setTimeout(() => descriptionTextareaRef.current?.focus(), 150);
   }
 
   function handleImportedFromUrl(payload: {
@@ -73,6 +113,25 @@ export default function AnalyzePage() {
       return;
     }
 
+    const resumeId = selectedResumeId ?? getActiveResumeId();
+    if (!resumeId) {
+      setMessage("Add a resume before running fit analysis.");
+      return;
+    }
+
+    const selectedResume = getResumeRecord(resumeId);
+    if (!selectedResume) {
+      setMessage("Choose a valid resume version before running analysis.");
+      return;
+    }
+
+    if (!isResumeRecordReadyForAnalysis(selectedResume)) {
+      setMessage(
+        "Save your selected resume for analysis on the Resume page before running fit analysis.",
+      );
+      return;
+    }
+
     setIsSaving(true);
     const cleanTitle = titleInput.trim() || "Untitled job";
     const cleanCompany = companyInput.trim() || "Unknown company";
@@ -92,9 +151,9 @@ export default function AnalyzePage() {
       },
       { sourceUrl },
     );
-    setActiveJob(jobId, { analyzeOnOpen: true });
-    logEvent("add_job", { jobTitle: cleanTitle });
-    setMessage(`Saved "${cleanTitle}". Opening analysis...`);
+    setActiveJob(jobId, { analyzeOnOpen: true, analysisResumeId: resumeId });
+    logEvent("add_job", { jobTitle: cleanTitle, resumeId, resumeName: selectedResume.name });
+    setMessage(`Saved "${cleanTitle}". Opening analysis with "${selectedResume.name}"...`);
     router.push("/results");
   }
 
@@ -107,13 +166,23 @@ export default function AnalyzePage() {
       />
 
       <div className="space-y-4">
+        <AnalysisResumeSelector
+          selectedResumeId={selectedResumeId}
+          onSelect={setSelectedResumeId}
+          disabled={isSaving}
+        />
+
         <section className="rounded-xl border-2 border-zinc-900/10 bg-white p-5 shadow-sm">
           <h2 className="text-sm font-semibold text-zinc-900">Add job from link</h2>
           <p className="mt-0.5 text-xs text-zinc-500">
             Paste a public job posting URL and we&apos;ll pull the description for you.
           </p>
           <div className="mt-4">
-            <JobUrlImport disabled={isSaving} onImported={handleImportedFromUrl} />
+            <JobUrlImport
+              disabled={isSaving}
+              onImported={handleImportedFromUrl}
+              onPasteManually={handlePasteManuallyFromImport}
+            />
           </div>
         </section>
 
@@ -154,6 +223,7 @@ export default function AnalyzePage() {
             Job description
           </label>
           <textarea
+            ref={descriptionTextareaRef}
             id="job-description"
             value={descriptionInput}
             onChange={(event) => {

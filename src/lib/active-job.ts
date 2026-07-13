@@ -4,6 +4,7 @@ import {
   getSelectedJobId,
   getStoredJobViews,
   markPendingAnalysisJobId,
+  markPendingAnalysisResumeId,
   setSelectedJobId,
 } from "@/lib/job-session-store";
 import type { StoredJobView } from "@/lib/stored-job";
@@ -53,10 +54,16 @@ export function getActiveJobSnapshot(baseJobs: JobPosting[] = []): ActiveJobSnap
 }
 
 /** Set the workspace active job and notify listeners. */
-export function setActiveJob(jobId: string, options?: { analyzeOnOpen?: boolean }): void {
+export function setActiveJob(
+  jobId: string,
+  options?: { analyzeOnOpen?: boolean; analysisResumeId?: string },
+): void {
   setSelectedJobId(jobId);
   if (options?.analyzeOnOpen) {
     markPendingAnalysisJobId(jobId);
+  }
+  if (options?.analysisResumeId) {
+    markPendingAnalysisResumeId(options.analysisResumeId);
   }
   dispatchActiveJobChanged();
 }
