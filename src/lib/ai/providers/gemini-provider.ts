@@ -298,6 +298,7 @@ export class GeminiProvider implements AIProvider {
       const response = await client.models.generateContent({
         model: "models/gemini-2.5-flash",
         contents: `${systemPolicy}\n\n${userPrompt}`,
+        config: { temperature: 0 },
       });
       raw = typeof response.text === "string" ? response.text : "";
     } catch (error) {
@@ -451,6 +452,7 @@ export class GeminiProvider implements AIProvider {
       const response = await client.models.generateContent({
         model: "models/gemini-2.5-flash",
         contents: `${systemPolicy}\n\n${userPrompt}`,
+        config: { temperature: 0 },
       });
       reply = typeof response.text === "string" ? response.text.trim() : "";
     } catch (error) {
@@ -603,6 +605,7 @@ export class GeminiProvider implements AIProvider {
       const response = await client.models.generateContent({
         model: "models/gemini-2.5-flash",
         contents: `${systemPolicy}\n\n${userPrompt}`,
+        config: { temperature: 0 },
       });
       raw = typeof response.text === "string" ? response.text : "";
       console.log("GEMINI RAW:", raw);

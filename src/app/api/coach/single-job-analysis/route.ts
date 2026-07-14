@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { analyzeSelectedJob, type AnalyzeSelectedJobInput, type ProviderConfigState } from "@/lib/ai";
+import { buildResumeJobContentFingerprint } from "@/lib/analysis-input-fingerprint";
 import {
   classifyAnalysisFailure,
   messageForAnalysisFailureCode,
@@ -15,6 +16,8 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const ANALYSIS_OUTPUT_CACHE = new Map<string, Awaited<ReturnType<typeof analyzeSelectedJob>>>();
 
 type AnalyzeSelectedJobRequestBody = {
   selectedJob: AnalyzeSelectedJobInput["selectedJob"];
@@ -179,6 +182,19 @@ export async function POST(request: Request) {
       });
     }
 
+    const contentFingerprint = buildResumeJobContentFingerprint({
+      jobDescription: parsedBody.selectedJob.description,
+      resumeContext,
+    });
+    const cached = ANALYSIS_OUTPUT_CACHE.get(contentFingerprint);
+    if (cached) {
+      logAnalysisDiagnostic("analysis_cache_hit", {
+        ...requestDiagnostics,
+        fingerprint: contentFingerprint,
+      });
+      return NextResponse.json(cached);
+    }
+
     logAnalysisDiagnostic("analysis_started", {
       ...requestDiagnostics,
       payloadChars: payloadCheck.payloadChars,
@@ -205,6 +221,7 @@ export async function POST(request: Request) {
       geminiApiStatus: "ok",
     });
 
+    ANALYSIS_OUTPUT_CACHE.set(contentFingerprint, response);
     return NextResponse.json(response);
   } catch (error) {
     const snippet = safeErrorSnippet(error);

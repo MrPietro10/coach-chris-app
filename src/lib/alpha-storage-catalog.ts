@@ -27,6 +27,7 @@ export const ALPHA_SCOPED_STORAGE_RESOURCES = [
   "job-import-feedback",
   "chris-chat",
   "storage-meta",
+  "analysis-output-cache",
 ] as const;
 
 export type AlphaScopedStorageResource = (typeof ALPHA_SCOPED_STORAGE_RESOURCES)[number];

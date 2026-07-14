@@ -50,6 +50,9 @@ export type AnalyzeSelectedJobInput = {
     location?: string;
     description: string;
     requiredSkills: string[];
+    hardRequirements?: string[];
+    softRequirements?: string[];
+    requirementsFingerprint?: string;
     status?: string;
   };
   resumeContext: {
@@ -120,6 +123,9 @@ export type GenerateTailoredResumeDraftInput = {
     location?: string;
     description: string;
     requiredSkills: string[];
+    hardRequirements?: string[];
+    softRequirements?: string[];
+    requirementsFingerprint?: string;
   };
   resumeContext: {
     summary: string;

@@ -568,6 +568,45 @@ export function updateUserJob(
   return true;
 }
 
+export function setStoredJobRequirements(
+  jobId: string,
+  requirements: {
+    hard: string[];
+    soft: string[];
+    requirementsFingerprint: string;
+  },
+): boolean {
+  if (!isBrowser()) return false;
+  const trimmed = jobId.trim();
+  if (!trimmed) return false;
+
+  const existing = readStoredJobRecords();
+  const now = new Date().toISOString();
+  let changed = false;
+  const next = existing.map((record) => {
+    if (record.id !== trimmed) return record;
+    const updated: StoredJobRecord = {
+      ...record,
+      hardRequirements: requirements.hard,
+      softRequirements: requirements.soft,
+      requirementsFingerprint: requirements.requirementsFingerprint,
+      // Keep requiredSkills in sync with hard requirements for backward compatibility.
+      requiredSkills: requirements.hard,
+      updatedAt: now,
+    };
+    changed =
+      (record.requirementsFingerprint ?? "") !== requirements.requirementsFingerprint ||
+      JSON.stringify(record.hardRequirements ?? []) !== JSON.stringify(requirements.hard) ||
+      JSON.stringify(record.softRequirements ?? []) !== JSON.stringify(requirements.soft);
+    return updated;
+  });
+
+  if (!changed) return false;
+  if (!writeStoredJobRecords(next)) return false;
+  dispatchJobWorkspaceChanged();
+  return true;
+}
+
 /** Hide a job from the workspace (user-added or demo/sample) and clear related state. */
 export function removeJobFromWorkspace(jobId: string): void {
   if (!isBrowser()) return;

@@ -14,6 +14,9 @@ export type StoredJobRecord = {
   source: JobSource;
   salaryRange?: string;
   requiredSkills: string[];
+  hardRequirements?: string[];
+  softRequirements?: string[];
+  requirementsFingerprint?: string;
   latestAnalysisRef?: LatestAnalysisReference;
 };
 
@@ -126,6 +129,16 @@ export function sanitizeStoredJobRecord(job: Partial<StoredJobRecord>): StoredJo
     requiredSkills: Array.isArray(job.requiredSkills)
       ? job.requiredSkills.filter((skill): skill is string => typeof skill === "string")
       : [],
+    hardRequirements: Array.isArray(job.hardRequirements)
+      ? job.hardRequirements.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean)
+      : undefined,
+    softRequirements: Array.isArray(job.softRequirements)
+      ? job.softRequirements.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean)
+      : undefined,
+    requirementsFingerprint:
+      typeof job.requirementsFingerprint === "string" && job.requirementsFingerprint.trim().length > 0
+        ? job.requirementsFingerprint.trim()
+        : undefined,
     latestAnalysisRef: sanitizeLatestAnalysisRef(job.latestAnalysisRef),
   };
 }
@@ -141,6 +154,9 @@ export function storedJobToJobPosting(record: StoredJobRecord): JobPosting {
     jobUrl: record.sourceUrl,
     description: record.description,
     requiredSkills: record.requiredSkills,
+    hardRequirements: record.hardRequirements,
+    softRequirements: record.softRequirements,
+    requirementsFingerprint: record.requirementsFingerprint,
   };
 }
 
@@ -161,6 +177,9 @@ export function jobPostingToStoredRecord(
     source: job.source,
     salaryRange: job.salaryRange,
     requiredSkills: job.requiredSkills,
+    hardRequirements: job.hardRequirements,
+    softRequirements: job.softRequirements,
+    requirementsFingerprint: job.requirementsFingerprint,
   };
 }
 

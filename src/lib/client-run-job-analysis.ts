@@ -1,5 +1,8 @@
 import { getProviderConfig, type AnalyzeSelectedJobOutput } from "@/lib/ai";
-import { buildAnalysisInputFingerprint } from "@/lib/analysis-input-fingerprint";
+import {
+  buildAnalysisInputFingerprint,
+  buildResumeJobContentFingerprint,
+} from "@/lib/analysis-input-fingerprint";
 import {
   buildAnalysisResumeSnapshotFromInput,
   enrichComputedJobAnalysisWithResumeLink,
@@ -16,9 +19,16 @@ import {
   getProviderUnavailableMessage,
   toComputedJobAnalysis,
 } from "@/lib/computed-job-analysis-mapper";
+import { getAnalysisOutputCache, setAnalysisOutputCache } from "@/lib/job-analysis-output-cache";
+import { setStoredJobRequirements } from "@/lib/job-session-store";
 import type { ComputedJobAnalysis } from "@/lib/job-session-store";
 import type { ConfidenceLevel, JobAnalysis, JobPosting } from "@/types/coach";
 import type { OptimizeJobData } from "@/types/coach";
+import {
+  buildJobRequirementsFingerprint,
+  computeDeterministicGaps,
+  extractJobRequirements,
+} from "@/lib/job-requirements";
 import { inferConfidenceLevel } from "@/utils/fit";
 
 export type RunJobAnalysisResult =
@@ -80,8 +90,32 @@ export async function runJobAnalysisForPosting(options: {
   };
   candidateName?: string | null;
 }): Promise<RunJobAnalysisResult> {
-  const { job, resumeContext, resumeCompleteness, storedComputed, existingReadyAnalysis, optimizeData } =
+  const { resumeContext, resumeCompleteness, storedComputed, existingReadyAnalysis, optimizeData } =
     options;
+  let job = options.job;
+
+  const requirementsFingerprint = buildJobRequirementsFingerprint(job.description);
+  const hasStoredRequirements =
+    Array.isArray(job.hardRequirements) ||
+    Array.isArray(job.softRequirements) ||
+    typeof job.requirementsFingerprint === "string";
+  const needsRequirementsRefresh = !hasStoredRequirements || job.requirementsFingerprint !== requirementsFingerprint;
+
+  if (needsRequirementsRefresh) {
+    const extracted = extractJobRequirements(job.description);
+    setStoredJobRequirements(job.id, {
+      hard: extracted.hard,
+      soft: extracted.soft,
+      requirementsFingerprint: extracted.fingerprint,
+    });
+    job = {
+      ...job,
+      requiredSkills: extracted.hard,
+      hardRequirements: extracted.hard,
+      softRequirements: extracted.soft,
+      requirementsFingerprint: extracted.fingerprint,
+    };
+  }
 
   const requestValidation = validateAnalysisRequest({
     jobDescription: job.description,
@@ -105,6 +139,11 @@ export async function runJobAnalysisForPosting(options: {
     resumeContext,
   });
 
+  const contentFingerprint = buildResumeJobContentFingerprint({
+    jobDescription: job.description,
+    resumeContext,
+  });
+
   const shouldUseCachedAnalysis =
     !options.forceRefresh &&
     storedComputed?.analysisState === "ready" &&
@@ -114,6 +153,55 @@ export async function runJobAnalysisForPosting(options: {
 
   if (shouldUseCachedAnalysis) {
     return { ok: true, analysis: storedComputed, fromCache: true };
+  }
+
+  if (!options.forceRefresh) {
+    const cachedPayload = getAnalysisOutputCache(contentFingerprint);
+    if (cachedPayload) {
+      const computedBase = toComputedJobAnalysis(job.id, cachedPayload);
+      const requirements = needsRequirementsRefresh
+        ? extractJobRequirements(job.description)
+        : {
+            hard: job.hardRequirements ?? [],
+            soft: job.softRequirements ?? [],
+            fingerprint: job.requirementsFingerprint ?? requirementsFingerprint,
+            extractor: "heuristic-v1" as const,
+          };
+      const deterministic = computeDeterministicGaps({ requirements, resumeContext });
+      const nextConfidence: ConfidenceLevel = inferConfidenceLevel({
+        resumeCompleteness,
+        missingEvidenceCount: computedBase.missingEvidence.length,
+        keyRequirementEvidenceCount: computedBase.strengths.length,
+        evidenceItems: computedBase.strengths,
+      });
+      const resumeSnapshot = buildAnalysisResumeSnapshotFromInput({
+        summary: resumeContext.summary,
+        skills: resumeContext.skills.join(", "),
+        highlights: resumeContext.experienceHighlights.join("\n"),
+        education: resumeContext.educationEntries.join("\n"),
+      });
+      const linkedAnalysis = enrichComputedJobAnalysisWithResumeLink(
+        {
+          ...computedBase,
+          gaps: deterministic.gaps,
+          inputFingerprint,
+          confidenceLevel: nextConfidence,
+        },
+        {
+          job,
+          resumeVersion:
+            options.resumeMeta?.id && options.resumeMeta.name
+              ? { id: options.resumeMeta.id, name: options.resumeMeta.name }
+              : options.resumeMeta?.id
+                ? { id: options.resumeMeta.id, name: "Untitled resume" }
+                : null,
+          resumeSnapshot,
+          candidateName: options.candidateName,
+        },
+      );
+
+      return { ok: true, analysis: linkedAnalysis, fromCache: true };
+    }
   }
 
   try {
@@ -127,7 +215,10 @@ export async function runJobAnalysisForPosting(options: {
           company: job.company,
           location: job.location,
           description: job.description,
-          requiredSkills: job.requiredSkills,
+          requiredSkills: job.hardRequirements ?? job.requiredSkills,
+          hardRequirements: job.hardRequirements,
+          softRequirements: job.softRequirements,
+          requirementsFingerprint: job.requirementsFingerprint,
         },
         resumeContext,
         resumeMeta: options.resumeMeta,
@@ -183,6 +274,9 @@ export async function runJobAnalysisForPosting(options: {
     }
 
     const payload = (await response.json()) as AnalyzeSelectedJobOutput;
+    if (!options.forceRefresh) {
+      setAnalysisOutputCache(contentFingerprint, payload);
+    }
     const unavailableMessage = getProviderUnavailableMessage(payload);
     if (unavailableMessage) {
       const mapped = messageForAnalysisFailureCode("api_key_missing");
@@ -195,6 +289,16 @@ export async function runJobAnalysisForPosting(options: {
     }
 
     const computedBase = toComputedJobAnalysis(job.id, payload);
+    const requirements =
+      job.hardRequirements?.length || job.softRequirements?.length
+        ? {
+            hard: job.hardRequirements ?? [],
+            soft: job.softRequirements ?? [],
+            fingerprint: job.requirementsFingerprint ?? requirementsFingerprint,
+            extractor: "heuristic-v1" as const,
+          }
+        : extractJobRequirements(job.description);
+    const deterministic = computeDeterministicGaps({ requirements, resumeContext });
     const nextConfidence: ConfidenceLevel = inferConfidenceLevel({
       resumeCompleteness,
       missingEvidenceCount: computedBase.missingEvidence.length,
@@ -212,6 +316,7 @@ export async function runJobAnalysisForPosting(options: {
     const linkedAnalysis = enrichComputedJobAnalysisWithResumeLink(
       {
         ...computedBase,
+        gaps: deterministic.gaps,
         inputFingerprint,
         confidenceLevel: nextConfidence,
       },

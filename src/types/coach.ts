@@ -81,6 +81,9 @@ export type JobPosting = {
   jobUrl?: string;
   description: string;
   requiredSkills: string[];
+  hardRequirements?: string[];
+  softRequirements?: string[];
+  requirementsFingerprint?: string;
 };
 
 export type JobAnalysis = {
