@@ -1183,8 +1183,6 @@ export default function ResultsPage() {
     });
     const storedComputed = computedAnalysesState[job.id];
     const shouldUseCachedAnalysis =
-      !options?.forceRefresh &&
-      eventName !== "rerun_analysis" &&
       storedComputed?.analysisState === "ready" &&
       storedComputed.inputFingerprint === inputFingerprint &&
       (!storedComputed.resumeVersionId ||
