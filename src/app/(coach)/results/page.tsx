@@ -1798,6 +1798,11 @@ export default function ResultsPage() {
       ? mergeTailoredFieldsWithSource(sourceInput, draftFieldsToStoredInput(draft))
       : draftFieldsToStoredInput(draft);
 
+    const existingTailored = getLatestTailoredResumeForJob(job.id);
+    if (existingTailored) {
+      return saveResumeInputForRecord(existingTailored.id, mergedInput);
+    }
+
     return createTailoredResumeVersion(mergedInput, {
       name: versionName,
       sourceResumeId: sourceRecord?.id ?? "",
