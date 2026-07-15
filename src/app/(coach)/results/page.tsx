@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { buildAnalysisInputFingerprint, buildResumeJobContentFingerprint } from "@/lib/analysis-input-fingerprint";
 import { getAnalysisOutputCache, setAnalysisOutputCache } from "@/lib/job-analysis-output-cache";
+import { getTailoredDraftOutputCache, setTailoredDraftOutputCache } from "@/lib/job-tailored-draft-output-cache";
 import {
   ANALYSIS_PROGRESS_STEPS,
   ANALYSIS_SUCCESS_MESSAGE,
@@ -1975,6 +1976,41 @@ export default function ResultsPage() {
       : resultsResumeContext.input;
     const resumeContext = buildAnalysisResumeContext(sourceInput);
 
+    const draftFingerprint = buildResumeJobContentFingerprint({
+      jobDescription: job.description,
+      resumeContext,
+    });
+    const cachedDraft = getTailoredDraftOutputCache(draftFingerprint);
+    if (cachedDraft) {
+      const cachedMergedInput = mergeTailoredFieldsWithSource(sourceInput, {
+        summary: cachedDraft.summary,
+        skills: cachedDraft.skills,
+        highlights: cachedDraft.highlights,
+        education: cachedDraft.education,
+      });
+      const cachedMergedDraft: TailoredResumeDraft = {
+        ...storedInputToDraftFields(cachedMergedInput),
+        notes: cachedDraft.notes,
+      };
+      setTailoredDraft(cachedMergedDraft);
+      if (!persistTailoredDraftToStorage(cachedMergedDraft)) {
+        setTailoredDraftFailureMessage(
+          "Coach Chris drafted your resume but could not save the draft in your browser.",
+        );
+        setTailoredDraftFailureCode(null);
+        setTailoredDraftCanRetry(false);
+        setTailoredDraftFailureOpen(true);
+        setIsDraftingTailoredResume(false);
+        return;
+      }
+      const cachedPersistedDraft = getPendingTailoredDraftForJob(job.id);
+      setTailoredDraftUpdatedAt(cachedPersistedDraft?.updatedAt ?? new Date().toISOString());
+      setShowPendingTailoredDraftBanner(false);
+      setTailoredDraftModalOpen(true);
+      setIsDraftingTailoredResume(false);
+      return;
+    }
+
     const result = await runTailoredResumeDraftWithRetry({
       selectedJob: {
         jobId: job.id,
@@ -2017,6 +2053,8 @@ export default function ResultsPage() {
       });
       return;
     }
+
+    setTailoredDraftOutputCache(draftFingerprint, result.draft);
 
     const mergedInput = mergeTailoredFieldsWithSource(sourceInput, {
       summary: result.draft.summary,
