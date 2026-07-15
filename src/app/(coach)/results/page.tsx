@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { buildAnalysisInputFingerprint } from "@/lib/analysis-input-fingerprint";
+import { buildAnalysisInputFingerprint, buildResumeJobContentFingerprint } from "@/lib/analysis-input-fingerprint";
+import { getAnalysisOutputCache, setAnalysisOutputCache } from "@/lib/job-analysis-output-cache";
 import {
   ANALYSIS_PROGRESS_STEPS,
   ANALYSIS_SUCCESS_MESSAGE,
@@ -1211,6 +1212,59 @@ export default function ResultsPage() {
       return;
     }
 
+    const contentFingerprint = buildResumeJobContentFingerprint({
+      jobDescription: job.description,
+      resumeContext,
+    });
+    const cachedOutputPayload = getAnalysisOutputCache(contentFingerprint);
+    if (cachedOutputPayload) {
+      setJobAnalyzed(job.id, true);
+      setAnalyzedJobsState((prev) => ({ ...prev, [job.id]: true }));
+      const cachedStatus = getStoredJobStatuses()[job.id];
+      if (!cachedStatus || cachedStatus === "Analyzed") {
+        setStoredJobStatus(job.id, "Analyzed");
+      }
+      const cachedBase = toComputedJobAnalysis(job.id, cachedOutputPayload);
+      const cachedResumeCompleteness = calculateResumeCompleteness(analysisResumeInput);
+      const cachedConfidence = inferConfidenceLevel({
+        resumeCompleteness: cachedResumeCompleteness,
+        missingEvidenceCount: cachedBase.missingEvidence.length,
+        keyRequirementEvidenceCount: cachedBase.strengths.length,
+        evidenceItems: cachedBase.strengths,
+      });
+      const cachedResumeSnapshot = buildAnalysisResumeSnapshotFromInput(analysisResumeInput);
+      const cachedComputed = enrichComputedJobAnalysisWithResumeLink(
+        {
+          ...cachedBase,
+          inputFingerprint,
+          confidenceLevel: cachedConfidence,
+        },
+        {
+          job,
+          resumeVersion: analysisResumeRecord
+            ? { id: analysisResumeRecord.id, name: analysisResumeRecord.name }
+            : null,
+          resumeSnapshot: cachedResumeSnapshot,
+          candidateName: getStoredProfile().fullName || profile.fullName,
+        },
+      );
+      setComputedJobAnalysis(cachedComputed);
+      setComputedAnalysesState((prev) => ({ ...prev, [job.id]: cachedComputed }));
+      setSelectedJob(job.id, { updatePendingContext: false });
+      clearPendingAnalysisContext();
+      syncResultsResumeContextFromAnalysis(cachedComputed);
+      logRetryContext("content_cache_hit_success", {
+        retryJobId: job.id,
+        retryResumeId: analysisResumeRecord?.id ?? retryResumeId,
+      });
+      setSingleJobError(null);
+      setSingleJobContextNotice("Showing your saved analysis for these inputs.");
+      setAnalysisFeedbackStatus("success");
+      setAnalysisFeedbackMessage(ANALYSIS_SUCCESS_MESSAGE);
+      window.dispatchEvent(new Event("career-coach:analysis-updated"));
+      return;
+    }
+
     logEvent(eventName, { jobTitle: job.title });
 
     singleJobAnalysisInFlightRef.current = true;
@@ -1302,6 +1356,7 @@ export default function ResultsPage() {
         return;
       }
       const payload = (await response.json()) as AnalyzeSelectedJobOutput;
+      setAnalysisOutputCache(contentFingerprint, payload);
       const unavailableMessage = getProviderUnavailableMessage(payload);
       if (unavailableMessage) {
         const apiKeyFailure = messageForAnalysisFailureCode("api_key_missing");
