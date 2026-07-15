@@ -114,7 +114,7 @@ export function resolveResumeForAnalysisRun(options: {
     if (pendingRecord) {
       return buildContext(
         pendingRecord,
-        options.inlineInput ?? recordToInput(pendingRecord),
+        recordToInput(pendingRecord),
         "pending",
       );
     }
