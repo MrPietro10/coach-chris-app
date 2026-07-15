@@ -531,6 +531,8 @@ export default function ResultsPage() {
   const [analyzedJobsState, setAnalyzedJobsState] = useState<AnalyzedJobsState>({});
   const [computedAnalysesState, setComputedAnalysesState] = useState<ComputedJobAnalysesState>({});
   const [selectedJobId, setSelectedJobId] = useState(() => analyses[0]?.jobId ?? "");
+  const selectedJobIdRef = useRef(selectedJobId);
+  selectedJobIdRef.current = selectedJobId;
   const [jobStatuses, setJobStatuses] = useState<JobStatusMap>(() =>
     typeof window === "undefined" ? {} : getStoredJobStatuses(),
   );
@@ -954,7 +956,7 @@ export default function ResultsPage() {
       refreshJobs();
       const latestAnalyses = getComputedJobAnalysesState();
       setComputedAnalysesState(latestAnalyses);
-      syncResultsResumeContextFromAnalysis(latestAnalyses[selectedJobId]);
+      syncResultsResumeContextFromAnalysis(latestAnalyses[selectedJobIdRef.current]);
       setJobStatuses(getStoredJobStatuses());
     };
     window.addEventListener("storage", refreshAll);
